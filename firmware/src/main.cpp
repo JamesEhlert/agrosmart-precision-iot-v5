@@ -2,8 +2,8 @@
  * ===================================================================================
  * NOME DO PROJETO: AGROSMART PRECISION SYSTEM (V5.0)
  * ===================================================================================
- * AUTOR: James Rafael Ehlert
- * DATA: Dezembro/2025
+ * AUTOR: James Rafael Ehlert Reinard
+ * DATA: 24 de Dezembro de 2025
  * VERSÃO: 5.4 (CSV Headers Fix & Full Monitoring)
  * ===================================================================================
  */
