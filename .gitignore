@@ -1,0 +1,20 @@
+# Arquivos de compilação do PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Arquivos de sistema e IDE
+.vscode/
+.DS_Store
+*.code-workspace
+
+# Arquivos de configuração com senhas (CRÍTICO)
+src/secrets.h
+include/secrets.h
+google-services.json
+firebase_options.dart
+keys/
+credentials/
+
+# Arquivos temporários
+*.log
