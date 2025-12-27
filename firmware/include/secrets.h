@@ -8,18 +8,18 @@
 // ==================================================
 
 // Rede Principal (Prioridade 1)
-const char WIFI_SSID_1[] = "PRIMCIPAL";
-const char WIFI_PASS_1[] = "16160248";
+const char WIFI_SSID[] = "PRIMCIPAL";
+const char WIFI_PASSWORD[] = "16160248";
 
 // Rede Secundária/Backup (Prioridade 2)
-const char WIFI_SSID_2[] = "TP-LINK_251A";
-const char WIFI_PASS_2[] = "16160248";
+//const char WIFI_SSID_2[] = "TP-LINK_251A";
+//const char WIFI_PASS_2[] = "16160248";
 
-const char WIFI_SSID_3[] = "motog5gplus";
-const char WIFI_PASS_3[] = "16160248";
+//const char WIFI_SSID_3[] = "motog5gplus";
+//const char WIFI_PASS_3[] = "16160248";
 
-const char WIFI_SSID_4[] = "redmi";
-const char WIFI_PASS_4[] = "16160248";
+//const char WIFI_SSID_4[] = "redmi";
+//const char WIFI_PASS_4[] = "16160248";
 
 // ==================================================
 // 2. Configurações de Tempo
