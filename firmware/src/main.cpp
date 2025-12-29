@@ -31,8 +31,8 @@
 // ===================================================================================
 // 1. CONFIGURAÇÕES GERAIS
 // ===================================================================================
-const uint32_t TELEMETRY_INTERVAL_MS = 60000; // Tempo entre envios (1 min)
-const uint32_t OLED_SWITCH_MS = 3000;         // Tempo de troca de tela (3s)
+const uint32_t TELEMETRY_INTERVAL_MS = 5000; // Tempo entre envios (1 min)
+const uint32_t OLED_SWITCH_MS = 1500;         // Tempo de troca de tela (3s)
 const long BRT_OFFSET_SEC = -10800;           // Fuso horário (-3h)
 
 // --- PINAGEM DE HARDWARE ---
