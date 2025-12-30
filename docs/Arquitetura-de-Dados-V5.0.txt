@@ -1,0 +1,134 @@
+// Espaço para snippets de código antigos
+
+🏛️ Estrutura do Banco de Dados (Firestore NoSQL)
+
+No Firestore, trabalhamos com Coleções (pastas) e Documentos (arquivos). Para o seu caso (Multi-usuário + Logs de Auditoria), esta é a estrutura mais profissional e otimizada:
+
+Vou detalhar o JSON (estrutura) de cada parte:
+1. Coleção users (Seus Clientes)
+
+Aqui guardamos quem é o dono. A segurança do App vai verificar se o uid do usuário logado bate com o owner_uid ou se está na lista de access.
+JSON
+
+// users/{userID}
+{
+  "uid": "Kjs83...",       // ID gerado pelo Firebase Auth
+  "email": "cliente@fazenda.com",
+  "name": "João Agricultor",
+  "created_at": 1735660000,
+  "role": "customer",      // customer, admin, support
+  "my_devices": [          // Array rápido para o App listar os dispositivos dele
+    "ESP32-AgroSmart-Station-V5",
+    "ESP32-Estufa-02"
+  ]
+}
+
+2. Coleção devices (Os Equipamentos)
+
+Esta é a "identidade digital" do ESP32. As configurações ficam aqui.
+JSON
+
+// devices/{deviceID}
+{
+  "device_id": "ESP32-AgroSmart-Station-V5",
+  "name": "Horta dos Fundos",
+  "owner_uid": "Kjs83...", // Vínculo de segurança (Dono)
+  "online": true,
+  
+  // CONFIGURAÇÕES GERAIS (Settings)
+  "settings": {
+    "min_moisture": 30,    // Abaixo disso, precisa regar
+    "max_moisture": 80,    // Acima disso, NÃO rega (Economia)
+    "rain_lockout": true,  // Se True, verifica previsão do tempo
+    "manual_duration": 10, // Segundos do botão manual
+    "latitude": -23.55,    // Necessário para API do Tempo
+    "longitude": -46.63
+  }
+}
+
+3. Sub-coleção schedules (Os Agendamentos)
+
+Fica dentro do documento do dispositivo (devices/{deviceID}/schedules/).
+JSON
+
+// devices/{deviceID}/schedules/{scheduleID}
+{
+  "label": "Rega Noturna",
+  "time": "20:00",
+  "days": [1, 3, 5],       // Seg, Qua, Sex
+  "duration_seconds": 600, // 10 minutos
+  "enabled": true
+}
+
+4. Sub-coleção history (A Solução para sua Dúvida) ✅
+
+Aqui matamos a charada dos logs. Fica dentro do dispositivo (devices/{deviceID}/history/). Salvamos tanto o que foi feito quanto o que foi bloqueado.
+
+Exemplo de Sucesso:
+JSON
+
+{
+  "timestamp": 1735661000,
+  "type": "execution",
+  "source": "schedule", // ou "manual"
+  "status": "success",
+  "message": "Irrigação realizada por 10 minutos."
+}
+
+Exemplo de Bloqueio Inteligente (O que você pediu):
+JSON
+
+{
+  "timestamp": 1735661000,
+  "type": "skipped",
+  "source": "schedule",
+  "status": "blocked",
+  "reason_code": "HIGH_MOISTURE", // Para o app traduzir
+  "message": "Agendamento cancelado: Umidade do solo (85%) acima do máximo configurado (80%).",
+  "weather_data": { // Opcional: Salvar evidência
+      "rain_forecast": "0mm",
+      "current_moisture": 85
+  }
+}
+
+Exemplo de Bloqueio por Chuva (Previsão):
+JSON
+
+{
+  "timestamp": 1735665000,
+  "type": "skipped",
+  "status": "blocked",
+  "reason_code": "RAIN_PREDICTED",
+  "message": "Agendamento cancelado: Previsão de chuva forte (15mm) na próxima hora.",
+}
+
+💡 Por que essa estrutura é "Profissional"?
+
+    Custo (Reads/Writes): Quando o usuário abre o App, ele lê apenas users e devices. Ele não baixa o histórico (history) a menos que clique na aba "Histórico". Isso economiza muito dinheiro de banco de dados no futuro.
+
+    Escalabilidade: Como o histórico é uma sub-coleção, ele pode crescer infinitamente sem deixar o carregamento do dispositivo lento.
+
+    Auditoria: Se o cliente reclamar "Minha planta morreu seca!", você abre o history e prova: "O sistema não regou dia 25 porque choveu 50mm". Isso é vital para um produto comercial.
+
+💾 Commit de Planejamento
+
+Como você pediu (e é o correto), vamos salvar o projeto antes de começar a codar as novas telas.
+
+No terminal, na pasta raiz do projeto:
+Bash
+
+git add .
+git commit -m "docs: architecture definition for database schema, multi-tenancy and audit logs"
+git push
+
+🚀 Próximo Passo Prático
+
+Agora que o banco está planejado, precisamos criar a Tela de Cadastro (Sign Up) no Flutter para que os usuários possam existir no banco de dados.
+
+O plano de ação agora:
+
+    Criar a tela SignUpScreen: Campos Nome, Email, Senha.
+
+    Lógica de Registro: Ao criar a conta no Firebase Auth, criar automaticamente o documento na coleção users com o array my_devices vazio.
+
+    Criar a tela DevicesListScreen: Que vai substituir aquela tela de "Bem-vindo" provisória.

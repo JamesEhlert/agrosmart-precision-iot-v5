@@ -1,1 +1,60 @@
 // Espaço para snippets de código antigos
+
+
+[{
+	"resource": "/home/james/Projects/agrosmart-precision-iot-v5/flutter-app/agrosmart_app_v5/android/build.gradle.kts",
+	"owner": "_generated_diagnostic_collection_name_#6",
+	"code": "0",
+	"severity": 8,
+	"message": "The supplied phased action failed with an exception.\nA problem occurred configuring root project 'android'.\nBuild file '/home/james/Projects/agrosmart-precision-iot-v5/flutter-app/agrosmart_app_v5/android/build.gradle.kts' line: 19\nA problem occurred configuring project ':app'.\ncom.android.builder.sdk.InstallFailedException: Failed to install the following SDK components:\n    ndk;28.2.13676358 NDK (Side by side) 28.2.13676358\nInstall the missing components using the SDK manager in Android Studio.\nFailed to install the following SDK components:\n    ndk;28.2.13676358 NDK (Side by side) 28.2.13676358\nInstall the missing components using the SDK manager in Android Studio.",
+	"source": "Java",
+	"startLineNumber": 19,
+	"startColumn": 1,
+	"endLineNumber": 19,
+	"endColumn": 1,
+	"origin": "extHost1"
+},{
+	"resource": "/home/james/Projects/agrosmart-precision-iot-v5/flutter-app/agrosmart_app_v5/test/widget_test.dart",
+	"owner": "_generated_diagnostic_collection_name_#4",
+	"code": {
+		"value": "creation_with_non_type",
+		"target": {
+			"$mid": 1,
+			"path": "/diagnostics/creation_with_non_type",
+			"scheme": "https",
+			"authority": "dart.dev"
+		}
+	},
+	"severity": 8,
+	"message": "The name 'MyApp' isn't a class.\nTry correcting the name to match an existing class.",
+	"source": "dart",
+	"startLineNumber": 16,
+	"startColumn": 35,
+	"endLineNumber": 16,
+	"endColumn": 40,
+	"origin": "extHost1"
+},{
+	"resource": "/home/james/Projects/agrosmart-precision-iot-v5/flutter-app/agrosmart_app_v5/android/app/build.gradle.kts",
+	"owner": "_generated_diagnostic_collection_name_#6",
+	"code": "0",
+	"severity": 2,
+	"message": "The build file has been changed and may need reload to make it effective.",
+	"source": "Java",
+	"startLineNumber": 1,
+	"startColumn": 1,
+	"endLineNumber": 1,
+	"endColumn": 1,
+	"origin": "extHost1"
+},{
+	"resource": "/home/james/Projects/agrosmart-precision-iot-v5/flutter-app/agrosmart_app_v5/android/settings.gradle.kts",
+	"owner": "_generated_diagnostic_collection_name_#6",
+	"code": "0",
+	"severity": 2,
+	"message": "The build file has been changed and may need reload to make it effective.",
+	"source": "Java",
+	"startLineNumber": 1,
+	"startColumn": 1,
+	"endLineNumber": 1,
+	"endColumn": 1,
+	"origin": "extHost1"
+}]
