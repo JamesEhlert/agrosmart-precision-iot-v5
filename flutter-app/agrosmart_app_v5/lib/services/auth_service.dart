@@ -1,18 +1,12 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart'; // Para usar debugPrint
-
-// TRUQUE PARA RESOLVER O ERRO:
-// Estamos dando um apelido 'provider' para a biblioteca oficial.
-// Isso evita que o Flutter confunda com outros arquivos do seu projeto.
-import 'package:google_sign_in/google_sign_in.dart' as provider; 
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter/foundation.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  
-  // Usamos o apelido 'provider' aqui para garantir que é a classe certa
-  final provider.GoogleSignIn _googleSignIn = provider.GoogleSignIn();
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
 
   User? get currentUser => _auth.currentUser;
 
@@ -27,51 +21,40 @@ class AuthService {
       email: email,
       password: password,
     );
-    User? user = result.user;
-
-    if (user != null) {
-      await _createUserDocument(user, name);
+    if (result.user != null) {
+      await _createUserDocument(result.user!, name);
     }
   }
 
   // --- LOGIN COM GOOGLE ---
   Future<User?> loginWithGoogle() async {
     try {
-      // 1. Inicia o fluxo
-      final provider.GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
-      
-      if (googleUser == null) return null; // Cancelado pelo usuário
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) return null;
 
-      // 2. Autenticação
-      final provider.GoogleSignInAuthentication googleAuth = googleUser.authentication;
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
 
-      // 3. Credenciais
       final AuthCredential credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      // 4. Login no Firebase
       final UserCredential result = await _auth.signInWithCredential(credential);
-      final User? user = result.user;
-
-      // 5. Salva no banco se for novo
-      if (user != null) {
-        final userDoc = await _firestore.collection('users').doc(user.uid).get();
-        if (!userDoc.exists) {
-          await _createUserDocument(user, user.displayName ?? 'Usuário Google');
+      
+      if (result.user != null) {
+        final doc = await _firestore.collection('users').doc(result.user!.uid).get();
+        if (!doc.exists) {
+          await _createUserDocument(result.user!, result.user!.displayName ?? 'Usuário Google');
         }
       }
-      return user;
-      
+      return result.user;
     } catch (e) {
-      // Usamos debugPrint em vez de print (boa prática para não dar erro de linter)
-      debugPrint("Erro no Google Sign In: $e");
+      debugPrint("Erro Google: $e");
       return null;
     }
   }
 
-  // --- RECUPERAÇÃO DE SENHA ---
+  // --- RECUPERAÇÃO DE SENHA (O QUE ESTAVA FALTANDO) ---
   Future<void> resetPassword(String email) async {
     await _auth.sendPasswordResetEmail(email: email);
   }
@@ -86,7 +69,7 @@ class AuthService {
     }
   }
 
-  // --- AUXILIAR: CRIAR DOCUMENTO ---
+  // --- CRIAR DOCUMENTO NO BANCO ---
   Future<void> _createUserDocument(User user, String name) async {
     await _firestore.collection('users').doc(user.uid).set({
       'uid': user.uid,
