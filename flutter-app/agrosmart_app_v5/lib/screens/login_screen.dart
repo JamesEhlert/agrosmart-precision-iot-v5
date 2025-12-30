@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'home_screen.dart'; // Criaremos em seguida
+import '../services/auth_service.dart';
+import 'home_screen.dart';
+import 'signup_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -10,44 +12,71 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  // Controladores para capturar o texto digitado
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  
-  // Variável para mostrar loading enquanto autentica
+  final _authService = AuthService(); // Instância do nosso serviço
   bool _isLoading = false;
 
-  // Função de Login
+  // Login com Email
   Future<void> _login() async {
     setState(() => _isLoading = true);
-
     try {
-      // Tenta fazer login no Firebase
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
+      await _authService.loginWithEmail(
+        _emailController.text.trim(),
+        _passwordController.text.trim(),
       );
-
-      // Se der certo, vai para a Home (Dashboard)
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (context) => const HomeScreen()),
-        );
-      }
+      _goToHome();
     } on FirebaseAuthException catch (e) {
-      // Se der erro (ex: senha errada), mostra um aviso
-      String message = "Erro ao fazer login.";
-      if (e.code == 'user-not-found') message = "Usuário não encontrado.";
-      if (e.code == 'wrong-password') message = "Senha incorreta.";
-      if (e.code == 'invalid-email') message = "E-mail inválido.";
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(message), backgroundColor: Colors.red),
-        );
-      }
+      _showError(e.message ?? "Erro ao logar");
     } finally {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // Login com Google
+  Future<void> _loginGoogle() async {
+    setState(() => _isLoading = true);
+    try {
+      final user = await _authService.loginWithGoogle();
+      if (user != null) _goToHome();
+    } catch (e) {
+      _showError("Erro no Google Login: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // Esqueci Minha Senha
+  Future<void> _forgotPassword() async {
+    if (_emailController.text.isEmpty) {
+      _showError("Digite seu e-mail para recuperar a senha.");
+      return;
+    }
+    try {
+      await _authService.resetPassword(_emailController.text.trim());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("E-mail de recuperação enviado!"), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      _showError("Erro ao enviar e-mail: $e");
+    }
+  }
+
+  void _goToHome() {
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (context) => const HomeScreen()),
+      );
+    }
+  }
+
+  void _showError(String msg) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), backgroundColor: Colors.red),
+      );
     }
   }
 
@@ -61,7 +90,6 @@ class _LoginScreenState extends State<LoginScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Ícone ou Logo
               const Icon(Icons.eco, size: 80, color: Colors.green),
               const SizedBox(height: 16),
               const Text(
@@ -71,43 +99,66 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 40),
 
-              // Campo de E-mail
               TextField(
                 controller: _emailController,
-                decoration: const InputDecoration(
-                  labelText: "E-mail",
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.email),
-                ),
+                decoration: const InputDecoration(labelText: "E-mail", border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)),
                 keyboardType: TextInputType.emailAddress,
               ),
               const SizedBox(height: 16),
 
-              // Campo de Senha
               TextField(
                 controller: _passwordController,
-                decoration: const InputDecoration(
-                  labelText: "Senha",
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.lock),
-                ),
-                obscureText: true, // Esconde a senha
+                decoration: const InputDecoration(labelText: "Senha", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)),
+                obscureText: true,
               ),
-              const SizedBox(height: 24),
+              
+              // Botão Esqueci Senha
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: _forgotPassword,
+                  child: const Text("Esqueci minha senha"),
+                ),
+              ),
+              
+              const SizedBox(height: 10),
 
-              // Botão de Entrar
+              // Botão Entrar
               SizedBox(
                 height: 50,
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _login,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                  ),
-                  child: _isLoading
-                      ? const CircularProgressIndicator(color: Colors.white)
-                      : const Text("ACESSAR SISTEMA", style: TextStyle(fontSize: 16)),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                  child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : const Text("ENTRAR"),
                 ),
+              ),
+
+              const SizedBox(height: 20),
+              
+              // Botão Google
+              OutlinedButton.icon(
+                onPressed: _isLoading ? null : _loginGoogle,
+                icon: const Icon(Icons.g_mobiledata, size: 30), // Ícone genérico do Google
+                label: const Text("Entrar com Google"),
+                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
+              ),
+
+              const SizedBox(height: 20),
+
+              // Link Cadastro
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text("Não tem conta?"),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (context) => const SignUpScreen()),
+                      );
+                    },
+                    child: const Text("Crie agora"),
+                  ),
+                ],
               ),
             ],
           ),
