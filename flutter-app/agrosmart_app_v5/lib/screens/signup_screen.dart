@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
-import 'home_screen.dart';
+import 'devices_list_screen.dart'; // <--- Importamos a tela nova aqui
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -33,9 +33,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
         _nameController.text.trim(),
       );
       if (mounted) {
-        // Remove tudo da pilha e vai para a Home
+        // Remove histórico de telas e vai para a Lista de Dispositivos
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (context) => const HomeScreen()),
+          MaterialPageRoute(builder: (context) => const DevicesListScreen()),
           (route) => false,
         );
       }

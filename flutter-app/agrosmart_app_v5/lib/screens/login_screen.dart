@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/auth_service.dart';
-import 'home_screen.dart';
 import 'signup_screen.dart';
+import 'devices_list_screen.dart'; // <--- Agora importamos a tela de dispositivos
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -14,7 +14,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _authService = AuthService(); // Instância do nosso serviço
+  final _authService = AuthService();
   bool _isLoading = false;
 
   // Login com Email
@@ -25,7 +25,10 @@ class _LoginScreenState extends State<LoginScreen> {
         _emailController.text.trim(),
         _passwordController.text.trim(),
       );
-      _goToHome();
+      // NÃO PRECISAMOS NAVEGAR MANUALMENTE MAIS
+      // O main.dart já vai perceber que logou e mudar a tela sozinho, 
+      // mas por garantia mantemos a navegação explícita:
+      _goToDevicesList();
     } on FirebaseAuthException catch (e) {
       _showError(e.message ?? "Erro ao logar");
     } finally {
@@ -38,7 +41,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
     try {
       final user = await _authService.loginWithGoogle();
-      if (user != null) _goToHome();
+      if (user != null) _goToDevicesList();
     } catch (e) {
       _showError("Erro no Google Login: $e");
     } finally {
@@ -46,7 +49,15 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // Esqueci Minha Senha
+  // Navegação para a lista de dispositivos
+  void _goToDevicesList() {
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (context) => const DevicesListScreen()),
+      );
+    }
+  }
+
   Future<void> _forgotPassword() async {
     if (_emailController.text.isEmpty) {
       _showError("Digite seu e-mail para recuperar a senha.");
@@ -61,14 +72,6 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       _showError("Erro ao enviar e-mail: $e");
-    }
-  }
-
-  void _goToHome() {
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
-      );
     }
   }
 
@@ -112,7 +115,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 obscureText: true,
               ),
               
-              // Botão Esqueci Senha
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(
@@ -123,7 +125,6 @@ class _LoginScreenState extends State<LoginScreen> {
               
               const SizedBox(height: 10),
 
-              // Botão Entrar
               SizedBox(
                 height: 50,
                 child: ElevatedButton(
@@ -135,17 +136,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 20),
               
-              // Botão Google
               OutlinedButton.icon(
                 onPressed: _isLoading ? null : _loginGoogle,
-                icon: const Icon(Icons.g_mobiledata, size: 30), // Ícone genérico do Google
+                icon: const Icon(Icons.g_mobiledata, size: 30),
                 label: const Text("Entrar com Google"),
                 style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
               ),
 
               const SizedBox(height: 20),
 
-              // Link Cadastro
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
