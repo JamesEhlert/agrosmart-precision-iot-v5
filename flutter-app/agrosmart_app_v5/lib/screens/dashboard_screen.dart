@@ -283,37 +283,37 @@ class _MonitorTabState extends State<_MonitorTab> {
 // 📅 ABA 2: AGENDAMENTOS (Firebase Firestore) - ATUALIZADA!
 // ==============================================================================
 
+// ... (Código anterior do arquivo Dashboard mantido igual)
+
+// ==============================================================================
+// 📅 ABA 2: AGENDAMENTOS (Firebase Firestore) - VERSÃO CORRIGIDA (EDIT + SWITCH)
+// ==============================================================================
+
 class _SchedulesTab extends StatelessWidget {
   final DeviceModel device;
-  final SchedulesService _service = SchedulesService(); // Instância do Serviço
+  final SchedulesService _service = SchedulesService(); 
 
   _SchedulesTab({required this.device});
 
-  // Função auxiliar para transformar [1, 3, 5] em "Seg, Qua, Sex"
   String _formatDays(List<int> days) {
     if (days.length == 7) return "Todos os dias";
-    if (days.isEmpty) return "Nenhum dia selecionado";
+    if (days.isEmpty) return "Nenhum dia";
     const map = {1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex', 6: 'Sáb', 7: 'Dom'};
-    // Ordena os dias e mapeia para os nomes
     final sortedDays = List<int>.from(days)..sort();
     return sortedDays.map((d) => map[d]).join(', ');
   }
 
   @override
   Widget build(BuildContext context) {
-    // Scaffold interno para poder usar o FloatingActionButton apenas nesta aba
     return Scaffold(
-      backgroundColor: Colors.transparent, // Usa o fundo da tela principal
+      backgroundColor: Colors.transparent, 
       
-      // Botão Flutuante (+) para criar novo agendamento
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
-          // Navega para a tela de formulário
+          // Navegação para CRIAR (sem passar scheduleToEdit)
           Navigator.push(
             context,
-            MaterialPageRoute(
-              builder: (context) => ScheduleFormScreen(deviceId: device.id),
-            ),
+            MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id)),
           );
         },
         label: const Text("Novo"),
@@ -321,22 +321,14 @@ class _SchedulesTab extends StatelessWidget {
         backgroundColor: Colors.green,
       ),
       
-      // Lista de Agendamentos (StreamBuilder ouve o Firestore em tempo real)
       body: StreamBuilder<List<ScheduleModel>>(
         stream: _service.getSchedules(device.id),
         builder: (context, snapshot) {
-          // Estado 1: Carregando
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          // Estado 2: Erro
-          if (snapshot.hasError) {
-            return Center(child: Text("Erro ao carregar: ${snapshot.error}"));
-          }
+          if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+          if (snapshot.hasError) return Center(child: Text("Erro: ${snapshot.error}"));
 
           final schedules = snapshot.data ?? [];
 
-          // Estado 3: Lista Vazia
           if (schedules.isEmpty) {
             return const Center(
               child: Column(
@@ -344,16 +336,14 @@ class _SchedulesTab extends StatelessWidget {
                 children: [
                   Icon(Icons.calendar_month_outlined, size: 60, color: Colors.grey),
                   SizedBox(height: 10),
-                  Text("Nenhum agendamento criado.", style: TextStyle(fontSize: 16)),
-                  Text("Toque em 'Novo' para automatizar.", style: TextStyle(color: Colors.grey)),
+                  Text("Nenhum agendamento criado."),
                 ],
               ),
             );
           }
 
-          // Estado 4: Lista com Dados
           return ListView.builder(
-            padding: const EdgeInsets.only(bottom: 80, top: 10), // Espaço para o botão flutuante não tapar o último item
+            padding: const EdgeInsets.only(bottom: 80, top: 10),
             itemCount: schedules.length,
             itemBuilder: (context, index) {
               final schedule = schedules[index];
@@ -363,49 +353,58 @@ class _SchedulesTab extends StatelessWidget {
                 elevation: 2,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 child: ListTile(
-                  // Ícone lateral: Verde se ativado, Cinza se desativado
+                  // 1. CORREÇÃO DA EDIÇÃO: Adicionado onTap no ListTile
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ScheduleFormScreen(
+                          deviceId: device.id,
+                          scheduleToEdit: schedule, // Passa o agendamento para editar
+                        ),
+                      ),
+                    );
+                  },
+
                   leading: CircleAvatar(
                     backgroundColor: schedule.isEnabled ? Colors.green[100] : Colors.grey[200],
-                    child: Icon(
-                      Icons.alarm, 
-                      color: schedule.isEnabled ? Colors.green : Colors.grey
-                    ),
+                    child: Icon(Icons.alarm, color: schedule.isEnabled ? Colors.green : Colors.grey),
                   ),
                   
-                  // Título: Hora e Nome
                   title: Text(
                     "${schedule.time} - ${schedule.label}",
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   
-                  // Subtítulo: Dias da semana e Duração
                   subtitle: Text(
                     "${_formatDays(schedule.days)}\nDuração: ${schedule.durationMinutes} min",
-                    style: TextStyle(color: Colors.grey[700]),
                   ),
                   
-                  // Ações (Direita): Switch e Lixeira
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Toggle: Ativar/Desativar
+                      // 2. CORREÇÃO DO SWITCH
                       Switch(
                         value: schedule.isEnabled,
                         activeColor: Colors.green,
                         onChanged: (val) {
-                          _service.toggleEnabled(device.id, schedule.id, val);
+                          // Chama o serviço para atualizar o Firestore
+                          _service.toggleEnabled(device.id, schedule.id, val).catchError((e) {
+                             // Se der erro (ex: permissão), mostra um aviso
+                             ScaffoldMessenger.of(context).showSnackBar(
+                               SnackBar(content: Text("Erro ao alterar: $e"), backgroundColor: Colors.red)
+                             );
+                          });
                         },
                       ),
-                      // Delete: Excluir
+                      
                       IconButton(
                         icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
                         onPressed: () {
-                          // Confirmação antes de deletar
                           showDialog(
                             context: context,
                             builder: (ctx) => AlertDialog(
-                              title: const Text("Excluir Agendamento?"),
-                              content: const Text("Essa ação não pode ser desfeita."),
+                              title: const Text("Excluir?"),
                               actions: [
                                 TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancelar")),
                                 TextButton(
