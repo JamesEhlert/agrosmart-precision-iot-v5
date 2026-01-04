@@ -1,10 +1,13 @@
-import 'dart:async'; // Necessário para o Timer
-import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import 'dart:async'; // Necessário para o Timer (atualização automática)
+import 'package:flutter/material.dart'; // Biblioteca de UI do Flutter
+import 'package:intl/intl.dart'; // Biblioteca para formatar datas
+
+// Importações dos modelos e serviços
 import '../models/device_model.dart';
 import '../models/telemetry_model.dart';
 import '../services/aws_service.dart';
 
+/// Tela Principal de Controle do Dispositivo (Dashboard)
 class DashboardScreen extends StatefulWidget {
   final DeviceModel device;
 
@@ -15,13 +18,13 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  int _currentIndex = 0;
+  int _currentIndex = 0; // Índice da aba selecionada
 
   @override
   Widget build(BuildContext context) {
-    // Lista de abas (Telas)
+    // Lista de telas correspondentes a cada aba
     final List<Widget> pages = [
-      _MonitorTab(device: widget.device),   // Aba 0: Monitoramento (AWS)
+      _MonitorTab(device: widget.device),   // Aba 0: Monitoramento (Corrigida)
       _SchedulesTab(device: widget.device), // Aba 1: Agendamentos
       _HistoryTab(device: widget.device),   // Aba 2: Histórico
       _SettingsTab(device: widget.device),  // Aba 3: Configurações
@@ -39,7 +42,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: Colors.green,
         foregroundColor: Colors.white,
         actions: [
-          // Indicador de Online/Offline
+          // Status (Online/Offline)
           Center(
             child: Padding(
               padding: const EdgeInsets.only(right: 16.0),
@@ -58,7 +61,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           )
         ],
       ),
-      body: pages[_currentIndex], // Mostra a tela selecionada
+      body: pages[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),
@@ -78,7 +81,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 // ==============================================================================
-// ABA 1: MONITORAMENTO (Integração com AWS + Auto Update)
+// ABA 1: MONITORAMENTO
 // ==============================================================================
 
 class _MonitorTab extends StatefulWidget {
@@ -91,38 +94,35 @@ class _MonitorTab extends StatefulWidget {
 
 class _MonitorTabState extends State<_MonitorTab> {
   final AwsService _awsService = AwsService();
-  TelemetryModel? _data;
-  bool _isLoading = true;
-  String _errorMessage = '';
-  Timer? _timer; // Variável para controlar o relógio de atualização
+  
+  TelemetryModel? _data;          // Dados dos sensores
+  bool _isLoadingData = true;     // Loading dos dados
+  bool _isSendingCommand = false; // Loading do botão de comando
+  String _errorMessage = '';      // Mensagem de erro
+  Timer? _timer;                  // Timer para auto-update
 
   @override
   void initState() {
     super.initState();
-    // 1. Busca os dados imediatamente ao abrir
     _fetchData();
-
-    // 2. Configura o timer para atualizar a cada 30 segundos
-    _timer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      _fetchData();
-    });
+    // Atualiza a cada 30 segundos
+    _timer = Timer.periodic(const Duration(seconds: 5), (timer) => _fetchData());
   }
 
   @override
   void dispose() {
-    // 3. Cancela o timer quando sair da tela para não gastar bateria/memória
-    _timer?.cancel();
+    _timer?.cancel(); // Limpa o timer ao sair
     super.dispose();
   }
 
+  /// Busca dados na AWS
   Future<void> _fetchData() async {
     if (!mounted) return;
 
-    // Só mostra o loading girando se for a primeira vez (tela vazia)
-    // Nas atualizações automáticas (Timer), atualizamos silenciosamente
+    // Apenas mostra loading visual se for a primeira carga
     if (_data == null) {
       setState(() {
-        _isLoading = true;
+        _isLoadingData = true;
         _errorMessage = '';
       });
     }
@@ -133,7 +133,7 @@ class _MonitorTabState extends State<_MonitorTab> {
       if (mounted) {
         setState(() {
           _data = data;
-          _isLoading = false;
+          _isLoadingData = false;
           if (data == null) {
             _errorMessage = "Dispositivo conectado, mas sem dados recentes.";
           }
@@ -142,63 +142,80 @@ class _MonitorTabState extends State<_MonitorTab> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _isLoading = false;
-          // Só mostra erro na tela se não tivermos dados antigos para mostrar
-          if (_data == null) {
-            _errorMessage = "Erro de conexão.";
-          }
+          _isLoadingData = false;
+          if (_data == null) _errorMessage = "Erro de conexão.";
         });
       }
     }
   }
 
+  /// Envia comando de irrigação (AJUSTADO PARA O SEU POSTMAN)
   Future<void> _sendManualIrrigation() async {
-    // Aqui implementaremos a lógica real de envio no futuro
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Enviando comando para AWS...")),
-    );
+    if (_isSendingCommand) return; // Evita cliques duplos
+
+    setState(() => _isSendingCommand = true);
+
+    try {
+      // CORREÇÃO: Enviando "on" em vez de "OPEN_VALVE"
+      // Mantive 300 segundos (5 min) pois é o padrão do botão, mas você pode mudar para 10 se quiser testar
+      final success = await _awsService.sendCommand(
+        widget.device.id, 
+        "on",  // <--- AQUI ESTAVA A DIFERENÇA
+        300    // Duração em segundos
+      );
+
+      if (!mounted) return;
+
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("✅ Comando enviado! A irrigação deve iniciar."),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("❌ A API rejeitou o comando. Verifique logs."),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Erro técnico: $e"), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) setState(() => _isSendingCommand = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: Colors.green));
-    }
+    if (_isLoadingData) return const Center(child: CircularProgressIndicator(color: Colors.green));
 
-    // Se houve erro ou não tem dados
-    if (_errorMessage.isNotEmpty || _data == null) {
+    // Exibe erro apenas se não houver dados antigos em cache
+    if ((_errorMessage.isNotEmpty && _data == null) || (_data == null && _errorMessage.isEmpty)) {
       return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.cloud_off, size: 60, color: Colors.grey),
-              const SizedBox(height: 16),
-              Text(
-                _errorMessage.isEmpty ? "Sem dados." : _errorMessage,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.grey),
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: _fetchData,
-                icon: const Icon(Icons.refresh),
-                label: const Text("Tentar Novamente"),
-              )
-            ],
-          ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.cloud_off, size: 60, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text(_errorMessage.isEmpty ? "Sem dados recebidos." : _errorMessage, style: const TextStyle(color: Colors.grey)),
+            const SizedBox(height: 20),
+            ElevatedButton(onPressed: _fetchData, child: const Text("Tentar Novamente"))
+          ],
         ),
       );
     }
 
-    // Formatação da data
     final dateFormat = DateFormat('dd/MM HH:mm:ss');
 
-    // --- TELA DO DASHBOARD ---
     return RefreshIndicator(
-      onRefresh: _fetchData, // Permite puxar pra baixo manualmente também
+      onRefresh: _fetchData,
       color: Colors.green,
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -206,7 +223,7 @@ class _MonitorTabState extends State<_MonitorTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Status da atualização
+            // Status do Update
             Text(
               "Atualizando a cada 30s • Última: ${dateFormat.format(_data!.timestamp)}",
               textAlign: TextAlign.right,
@@ -214,7 +231,7 @@ class _MonitorTabState extends State<_MonitorTab> {
             ),
             const SizedBox(height: 10),
 
-            // CARD 1: AMBIENTE E SOLO
+            // --- BLOCO 1: AMBIENTE ---
             _buildSectionTitle("Ambiente & Solo"),
             Card(
               elevation: 4,
@@ -224,24 +241,9 @@ class _MonitorTabState extends State<_MonitorTab> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    _SensorWidget(
-                      icon: Icons.thermostat,
-                      value: "${_data!.airTemp.toStringAsFixed(1)}°C",
-                      label: "Temp Ar",
-                      color: Colors.orange,
-                    ),
-                    _SensorWidget(
-                      icon: Icons.water_drop_outlined,
-                      value: "${_data!.airHumidity.toStringAsFixed(0)}%",
-                      label: "Umid. Ar",
-                      color: Colors.blueAccent,
-                    ),
-                    _SensorWidget(
-                      icon: Icons.grass,
-                      value: "${_data!.soilMoisture.toStringAsFixed(0)}%",
-                      label: "Umid. Solo",
-                      color: Colors.brown,
-                    ),
+                    _SensorWidget(icon: Icons.thermostat, value: "${_data!.airTemp.toStringAsFixed(1)}°C", label: "Temp Ar", color: Colors.orange),
+                    _SensorWidget(icon: Icons.water_drop_outlined, value: "${_data!.airHumidity.toStringAsFixed(0)}%", label: "Umid. Ar", color: Colors.blueAccent),
+                    _SensorWidget(icon: Icons.grass, value: "${_data!.soilMoisture.toStringAsFixed(0)}%", label: "Umid. Solo", color: Colors.brown),
                   ],
                 ),
               ),
@@ -249,7 +251,7 @@ class _MonitorTabState extends State<_MonitorTab> {
 
             const SizedBox(height: 16),
 
-            // CARD 2: EXTERNO (Luz, UV, Chuva)
+            // --- BLOCO 2: EXTERNO ---
             _buildSectionTitle("Externo"),
             Card(
               elevation: 4,
@@ -259,24 +261,9 @@ class _MonitorTabState extends State<_MonitorTab> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    _SensorWidget(
-                      icon: Icons.wb_sunny,
-                      value: _data!.uvIndex.toStringAsFixed(1),
-                      label: "Índice UV",
-                      color: Colors.amber,
-                    ),
-                    _SensorWidget(
-                      icon: Icons.light_mode,
-                      value: _data!.lightLevel.toStringAsFixed(0),
-                      label: "Luz (Lux)",
-                      color: Colors.yellow[700]!,
-                    ),
-                    _SensorWidget(
-                      icon: Icons.cloud,
-                      value: "${_data!.rainRaw}",
-                      label: "Chuva (Raw)",
-                      color: Colors.blueGrey,
-                    ),
+                    _SensorWidget(icon: Icons.wb_sunny, value: _data!.uvIndex.toStringAsFixed(1), label: "Índice UV", color: Colors.amber),
+                    _SensorWidget(icon: Icons.light_mode, value: _data!.lightLevel.toStringAsFixed(0), label: "Luz (Lux)", color: Colors.yellow[700]!),
+                    _SensorWidget(icon: Icons.cloud, value: "${_data!.rainRaw}", label: "Chuva (Raw)", color: Colors.blueGrey),
                   ],
                 ),
               ),
@@ -284,18 +271,30 @@ class _MonitorTabState extends State<_MonitorTab> {
 
             const SizedBox(height: 24),
             
-            // CARD 3: AÇÕES
+            // --- BLOCO 3: BOTÃO DE AÇÃO ---
             _buildSectionTitle("Ações"),
             SizedBox(
               height: 50,
-              child: ElevatedButton.icon(
-                onPressed: _sendManualIrrigation,
-                icon: const Icon(Icons.water),
-                label: const Text("IRRIGAÇÃO MANUAL (5 min)"),
+              child: ElevatedButton(
+                onPressed: _isSendingCommand ? null : _sendManualIrrigation,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue,
                   foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.blue.withValues(alpha: 0.6),
                 ),
+                child: _isSendingCommand
+                    ? const SizedBox(
+                        height: 24, width: 24,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                      )
+                    : const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.water),
+                          SizedBox(width: 8),
+                          Text("IRRIGAÇÃO MANUAL (5 min)"),
+                        ],
+                      ),
               ),
             ),
           ],
@@ -312,19 +311,13 @@ class _MonitorTabState extends State<_MonitorTab> {
   }
 }
 
-// Widget auxiliar para desenhar os ícones dos sensores
 class _SensorWidget extends StatelessWidget {
   final IconData icon;
   final String value;
   final String label;
   final Color color;
 
-  const _SensorWidget({
-    required this.icon,
-    required this.value,
-    required this.label,
-    required this.color,
-  });
+  const _SensorWidget({required this.icon, required this.value, required this.label, required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -333,8 +326,7 @@ class _SensorWidget extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            // Atualizado para usar withValues (substituto moderno do withOpacity)
-            color: color.withValues(alpha: 0.15), 
+            color: color.withValues(alpha: 0.15),
             shape: BoxShape.circle,
           ),
           child: Icon(icon, color: color, size: 28),
@@ -347,36 +339,7 @@ class _SensorWidget extends StatelessWidget {
   }
 }
 
-// ==============================================================================
-// OUTRAS ABAS (Placeholders)
-// ==============================================================================
-
-class _SchedulesTab extends StatelessWidget {
-  final DeviceModel device;
-  const _SchedulesTab({required this.device});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(child: Text("Lista de Agendamentos\n(Em Breve)"));
-  }
-}
-
-class _HistoryTab extends StatelessWidget {
-  final DeviceModel device;
-  const _HistoryTab({required this.device});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(child: Text("Gráficos e Histórico\n(Em Breve)"));
-  }
-}
-
-class _SettingsTab extends StatelessWidget {
-  final DeviceModel device;
-  const _SettingsTab({required this.device});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(child: Text("Configurações do Dispositivo\n(Em Breve)"));
-  }
-}
+// Placeholders para outras abas
+class _SchedulesTab extends StatelessWidget { final DeviceModel device; const _SchedulesTab({required this.device}); @override Widget build(BuildContext context) => const Center(child: Text("Agendas")); }
+class _HistoryTab extends StatelessWidget { final DeviceModel device; const _HistoryTab({required this.device}); @override Widget build(BuildContext context) => const Center(child: Text("Histórico")); }
+class _SettingsTab extends StatelessWidget { final DeviceModel device; const _SettingsTab({required this.device}); @override Widget build(BuildContext context) => const Center(child: Text("Configs")); }
