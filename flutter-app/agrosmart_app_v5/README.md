@@ -2,15 +2,40 @@
 
 A new Flutter project.
 
-## Getting Started
+📝 2. Atualização da Documentação Técnica
 
-This project is a starting point for a Flutter application.
+Como descobrimos que a Lambda é rigorosa com o formato do JSON, é crucial documentar isso para não esquecermos no futuro (por exemplo, quando formos fazer a automação).
 
-A few resources to get you started if this is your first Flutter project:
+Eu gerei abaixo um texto técnico. Sugiro que você copie e cole isso no seu arquivo de anotações do projeto (ex: README.md ou docs/API_REFERENCE.md), na seção de Integração AWS.
+📄 Registro de Alteração: Controle Manual de Irrigação
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Data: 03/01/2026 Status: Funcional (Testado via Postman e App Mobile)
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Endpoint de Comando:
+
+    URL: https://r6rky7wzx6.execute-api.us-east-2.amazonaws.com/prod/command
+
+    Método: POST
+
+Estrutura do Payload (JSON Obrigatório): Diferente da documentação inicial, a Lambda não aceita chaves arbitrárias. O formato estrito exigido é:
+JSON
+
+{
+  "device_id": "ESP32-AgroSmart-Station-V5", 
+  "action": "on",       
+  "duration": 300       
+}
+
+    device_id: String. O ID exato registrado no DynamoDB/IoT Core.
+
+    action: String. Deve ser estritamente "on" (minúsculo). O valor "OPEN_VALVE" falha.
+
+    duration: Inteiro. Tempo em segundos para manter a válvula aberta.
+
+🚀 Próximo Passo: Agendamentos
+
+Agora que temos:
+
+    Monitoramento (GET): ✅ Funcionando.
+
+    Controle Manual (POST): ✅ Funcionando.
