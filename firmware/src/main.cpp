@@ -4,14 +4,7 @@
  * ===================================================================================
  * AUTOR: James Rafael Ehlert
  * DATA: Dezembro/2025
- * VERSÃO: 5.13 (Full Debug + Documentation + Valve Pin 2)
- * ===================================================================================
- * DESCRIÇÃO:
- * Firmware principal para estação meteorológica e controle de irrigação.
- * * MUDANÇAS RECENTES:
- * - Pino da Válvula alterado para GPIO 2.
- * - Comando MQTT alterado de "water" para "on".
- * - Adicionado logs detalhados (Verbose) no Serial.
+ * VERSÃO: 5.13
  * ===================================================================================
  */
 
@@ -31,8 +24,8 @@
 // ===================================================================================
 // 1. CONFIGURAÇÕES GERAIS
 // ===================================================================================
-const uint32_t TELEMETRY_INTERVAL_MS = 5000; // Tempo entre envios (1 min)
-const uint32_t OLED_SWITCH_MS = 1500;         // Tempo de troca de tela (3s)
+const uint32_t TELEMETRY_INTERVAL_MS = 60000; // Tempo entre envios (1 min)
+const uint32_t OLED_SWITCH_MS = 2000;         // Tempo de troca de tela (3s)
 const long BRT_OFFSET_SEC = -10800;           // Fuso horário (-3h)
 
 // --- PINAGEM DE HARDWARE ---
