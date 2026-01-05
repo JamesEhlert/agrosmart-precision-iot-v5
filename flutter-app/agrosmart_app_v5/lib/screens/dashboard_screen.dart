@@ -1,21 +1,27 @@
-import 'dart:async'; // Para o Timer de atualização automática
+// ARQUIVO: lib/screens/dashboard_screen.dart
+
+import 'dart:async'; // Para o Timer de atualização automática da telemetria
 import 'package:flutter/material.dart'; // Componentes visuais do Flutter
 import 'package:intl/intl.dart'; // Para formatar datas e horas
 
 // --- IMPORTAÇÕES DOS NOSSOS MÓDULOS ---
 import '../models/device_model.dart';
 import '../models/telemetry_model.dart';
-import '../models/schedule_model.dart'; // Novo: Modelo de Agendamento
+import '../models/schedule_model.dart';
 
 import '../services/aws_service.dart';
-import '../services/schedules_service.dart'; // Novo: Serviço do Firebase
+import '../services/schedules_service.dart';
+import '../services/device_service.dart'; // IMPORTANTE: Para ouvir atualizações do device
 
-import 'schedule_form_screen.dart'; // Novo: Tela de criar agendamento
+import 'schedule_form_screen.dart'; // Tela de formulário de agendamento
+import 'settings_tab.dart'; // Tela de configurações (Engrenagem)
 
+/// ============================================================================
 /// TELA PRINCIPAL (DASHBOARD)
-/// Gerencia as 4 abas principais: Monitor, Agenda, Histórico, Configurações
+/// Gerencia as 4 abas: Monitor, Agenda, Histórico, Configurações.
+/// ============================================================================
 class DashboardScreen extends StatefulWidget {
-  final DeviceModel device;
+  final DeviceModel device; // Dispositivo inicial (passado pela lista)
 
   const DashboardScreen({super.key, required this.device});
 
@@ -25,76 +31,92 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   int _currentIndex = 0; // Controla qual aba está visível
+  final DeviceService _deviceService = DeviceService(); // Para ouvir mudanças nas configurações
 
   @override
   Widget build(BuildContext context) {
-    // Lista das páginas (Abas)
-    final List<Widget> pages = [
-      _MonitorTab(device: widget.device),   // Aba 0: Monitoramento AWS
-      _SchedulesTab(device: widget.device), // Aba 1: Agendamentos Firebase (ATUALIZADO)
-      _HistoryTab(device: widget.device),   // Aba 2: Histórico (Futuro)
-      _SettingsTab(device: widget.device),  // Aba 3: Configurações (Futuro)
-    ];
+    // 1. STREAM BUILDER GLOBAL
+    // Envolvemos todo o Scaffold num StreamBuilder do Dispositivo.
+    // Isso garante que se mudarmos o nome ou tempo de rega na aba Config,
+    // a aba Monitor (e o cabeçalho) atualizam imediatamente.
+    return StreamBuilder<DeviceModel>(
+      stream: _deviceService.getDeviceStream(widget.device.id),
+      initialData: widget.device, // Começa com os dados que já temos
+      builder: (context, snapshot) {
+        
+        // Se houver erro ou estiver carregando sem dados, usamos o widget.device como fallback
+        final device = snapshot.data ?? widget.device;
 
-    return Scaffold(
-      // --- APP BAR (CABEÇALHO) ---
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(widget.device.settings.deviceName, style: const TextStyle(fontSize: 18)),
-            Text(widget.device.id, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-          ],
-        ),
-        backgroundColor: Colors.green,
-        foregroundColor: Colors.white,
-        actions: [
-          // Indicador de Status (Online/Offline)
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.only(right: 16.0),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: widget.device.isOnline ? Colors.greenAccent : Colors.redAccent,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  widget.device.isOnline ? "ONLINE" : "OFFLINE",
-                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87),
-                ),
-              ),
+        // Lista das páginas (Abas) - Recriadas com os dados atualizados (device)
+        final List<Widget> pages = [
+          _MonitorTab(device: device),     // Aba 0: Monitoramento (Recebe device atualizado)
+          _SchedulesTab(device: device),   // Aba 1: Agendamentos
+          _HistoryTab(device: device),     // Aba 2: Histórico (Placeholder)
+          SettingsTab(device: device),     // Aba 3: Configurações (Sua nova tela)
+        ];
+
+        return Scaffold(
+          // --- CABEÇALHO (APP BAR) ---
+          appBar: AppBar(
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Nome do Dispositivo (Atualiza em tempo real se mudar nas configs)
+                Text(device.settings.deviceName, style: const TextStyle(fontSize: 18)),
+                Text(device.id, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+              ],
             ),
-          )
-        ],
-      ),
-      
-      // --- CORPO DA TELA (Muda conforme a aba) ---
-      body: pages[_currentIndex],
+            backgroundColor: Colors.green,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            actions: [
+              // Indicador de Status (Online/Offline)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 16.0),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: device.isOnline ? Colors.greenAccent : Colors.redAccent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      device.isOnline ? "ONLINE" : "OFFLINE",
+                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87),
+                    ),
+                  ),
+                ),
+              )
+            ],
+          ),
 
-      // --- BARRA DE NAVEGAÇÃO INFERIOR ---
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
-        type: BottomNavigationBarType.fixed, // Impede animação de "dança" dos ícones
-        selectedItemColor: Colors.green,
-        unselectedItemColor: Colors.grey,
-        showUnselectedLabels: true,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: "Monitor"),
-          BottomNavigationBarItem(icon: Icon(Icons.calendar_month_outlined), activeIcon: Icon(Icons.calendar_month), label: "Agenda"),
-          BottomNavigationBarItem(icon: Icon(Icons.show_chart), label: "Histórico"),
-          BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), activeIcon: Icon(Icons.settings), label: "Config"),
-        ],
-      ),
+          // --- CORPO DA TELA ---
+          body: pages[_currentIndex],
+
+          // --- BARRA DE NAVEGAÇÃO INFERIOR ---
+          bottomNavigationBar: BottomNavigationBar(
+            currentIndex: _currentIndex,
+            onTap: (index) => setState(() => _currentIndex = index),
+            type: BottomNavigationBarType.fixed,
+            selectedItemColor: Colors.green,
+            unselectedItemColor: Colors.grey,
+            showUnselectedLabels: true,
+            items: const [
+              BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: "Monitor"),
+              BottomNavigationBarItem(icon: Icon(Icons.calendar_month_outlined), activeIcon: Icon(Icons.calendar_month), label: "Agenda"),
+              BottomNavigationBarItem(icon: Icon(Icons.show_chart), label: "Histórico"),
+              BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), activeIcon: Icon(Icons.settings), label: "Config"),
+            ],
+          ),
+        );
+      }
     );
   }
 }
 
-// ==============================================================================
-// 🟢 ABA 1: MONITORAMENTO (AWS + Controle Manual)
-// ==============================================================================
-
+/// ============================================================================
+/// 🟢 ABA 1: MONITORAMENTO (AWS + Controle Manual)
+/// ============================================================================
 class _MonitorTab extends StatefulWidget {
   final DeviceModel device;
   const _MonitorTab({required this.device});
@@ -105,30 +127,30 @@ class _MonitorTab extends StatefulWidget {
 
 class _MonitorTabState extends State<_MonitorTab> {
   final AwsService _awsService = AwsService();
-  
-  TelemetryModel? _data;          // Dados dos sensores
-  bool _isLoadingData = true;     // Loading inicial
-  bool _isSendingCommand = false; // Loading do botão
-  String _errorMessage = '';      // Mensagem de erro
-  Timer? _timer;                  // Atualização automática
+  TelemetryModel? _data;          // Dados dos sensores vindos da AWS
+  bool _isLoadingData = true;     // Loading inicial da telemetria
+  bool _isSendingCommand = false; // Loading do botão de ação
+  String _errorMessage = '';      // Mensagem de erro amigável
+  Timer? _timer;                  // Timer para buscar dados periodicamente
 
   @override
   void initState() {
     super.initState();
     _fetchData();
-    // Atualiza a cada 30 segundos
+    // Atualiza a cada 30 segundos automaticamente
     _timer = Timer.periodic(const Duration(seconds: 30), (timer) => _fetchData());
   }
 
   @override
   void dispose() {
-    _timer?.cancel(); // Limpa timer ao sair
+    _timer?.cancel(); // Importante: Parar o timer ao sair da tela para não gastar bateria
     super.dispose();
   }
 
   /// Busca dados na AWS (GET)
   Future<void> _fetchData() async {
     if (!mounted) return;
+    // Só mostra loading na primeira vez, nas atualizações automáticas não
     if (_data == null) {
       setState(() { _isLoadingData = true; _errorMessage = ''; });
     }
@@ -146,31 +168,40 @@ class _MonitorTabState extends State<_MonitorTab> {
       if (mounted) {
         setState(() {
           _isLoadingData = false;
+          // Só mostra erro se não tivermos dados antigos para mostrar
           if (_data == null) _errorMessage = "Erro de conexão.";
         });
       }
     }
   }
 
-  /// Envia comando manual (POST)
+  /// Envia comando manual (POST) respeitando a configuração do usuário
   Future<void> _sendManualIrrigation() async {
     if (_isSendingCommand) return;
     setState(() => _isSendingCommand = true);
 
     try {
-      // Envia "on" para a Lambda
-      final success = await _awsService.sendCommand(widget.device.id, "on", 300);
+      // 1. Pega a duração configurada (em minutos) e converte para segundos
+      final int durationMinutes = widget.device.settings.manualDuration;
+      final int durationSeconds = durationMinutes * 60;
+
+      // 2. Envia para a AWS
+      final success = await _awsService.sendCommand(
+        widget.device.id, 
+        "on", 
+        durationSeconds
+      );
 
       if (!mounted) return;
 
       if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("✅ Comando enviado! Irrigação iniciará em breve."),
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("✅ Comando enviado! Irrigando por $durationMinutes min."),
           backgroundColor: Colors.green,
         ));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("❌ Falha no comando. Verifique conexão."),
+          content: Text("❌ Falha no comando. Verifique a conexão."),
           backgroundColor: Colors.red,
         ));
       }
@@ -184,10 +215,19 @@ class _MonitorTabState extends State<_MonitorTab> {
     }
   }
 
+  /// Auxiliar para formatar a data considerando o Fuso Horário Configurado
+  String _formatLastUpdate(DateTime utcTime) {
+    // Adiciona o offset (ex: -3 horas) ao horário UTC que veio da AWS
+    final localTime = utcTime.add(Duration(hours: widget.device.settings.timezoneOffset));
+    return DateFormat('dd/MM HH:mm:ss').format(localTime);
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Exibe Loading Centralizado se não tiver dados ainda
     if (_isLoadingData) return const Center(child: CircularProgressIndicator(color: Colors.green));
 
+    // Exibe Erro se falhou e não tem dados cache
     if ((_errorMessage.isNotEmpty && _data == null) || (_data == null && _errorMessage.isEmpty)) {
       return Center(
         child: Column(
@@ -196,31 +236,35 @@ class _MonitorTabState extends State<_MonitorTab> {
             const Icon(Icons.cloud_off, size: 60, color: Colors.grey),
             const SizedBox(height: 16),
             Text(_errorMessage.isEmpty ? "Sem dados." : _errorMessage, style: const TextStyle(color: Colors.grey)),
+            const SizedBox(height: 10),
             ElevatedButton(onPressed: _fetchData, child: const Text("Tentar Novamente"))
           ],
         ),
       );
     }
 
-    final dateFormat = DateFormat('dd/MM HH:mm:ss');
-
     return RefreshIndicator(
       onRefresh: _fetchData,
       color: Colors.green,
       child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
+        physics: const AlwaysScrollableScrollPhysics(), // Permite arrastar pra atualizar mesmo se lista for pequena
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text("Atualizando a cada 30s • Última: ${dateFormat.format(_data!.timestamp)}", 
-              textAlign: TextAlign.right, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+            // Texto de última atualização com Fuso Horário aplicado
+            Text(
+              "Atualizando a cada 30s • Última: ${_formatLastUpdate(_data!.timestamp)}",
+              textAlign: TextAlign.right, 
+              style: TextStyle(color: Colors.grey[600], fontSize: 12)
+            ),
             const SizedBox(height: 10),
 
-            // Card 1: Ambiente
+            // --- CARD 1: AMBIENTE ---
             _buildSectionTitle("Ambiente & Solo"),
             Card(
-              elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              elevation: 4, 
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Row(
@@ -235,10 +279,11 @@ class _MonitorTabState extends State<_MonitorTab> {
             ),
             const SizedBox(height: 16),
 
-            // Card 2: Externo
+            // --- CARD 2: EXTERNO ---
             _buildSectionTitle("Externo"),
             Card(
-              elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              elevation: 4, 
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Row(
@@ -253,21 +298,34 @@ class _MonitorTabState extends State<_MonitorTab> {
             ),
             const SizedBox(height: 24),
 
-            // Botão de Ação
+            // --- BOTÃO DE AÇÃO DINÂMICO ---
             _buildSectionTitle("Ações"),
             SizedBox(
               height: 50,
               child: ElevatedButton(
                 onPressed: _isSendingCommand ? null : _sendManualIrrigation,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue, foregroundColor: Colors.white,
-                  disabledBackgroundColor: Colors.blue.withValues(alpha: 0.6),
+                  backgroundColor: Colors.blue, 
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.blue.withOpacity(0.6), // Correção para versão nova do Flutter
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))
                 ),
                 child: _isSendingCommand
                   ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.water), SizedBox(width: 8), Text("IRRIGAÇÃO MANUAL (5 min)")]),
+                  : Row(
+                      mainAxisAlignment: MainAxisAlignment.center, 
+                      children: [
+                        const Icon(Icons.water), 
+                        const SizedBox(width: 8), 
+                        // TEXTO DINÂMICO: Mostra o tempo configurado pelo usuário
+                        Text("IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration} min)")
+                      ]
+                    ),
               ),
             ),
+            
+            const SizedBox(height: 8),
+            Center(child: Text("Tempo configurável na aba Configurações", style: TextStyle(fontSize: 10, color: Colors.grey[400]))),
           ],
         ),
       ),
@@ -275,26 +333,23 @@ class _MonitorTabState extends State<_MonitorTab> {
   }
 
   Widget _buildSectionTitle(String title) {
-    return Padding(padding: const EdgeInsets.only(left: 8, bottom: 8), child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black54)));
+    return Padding(
+      padding: const EdgeInsets.only(left: 8, bottom: 8), 
+      child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black54))
+    );
   }
 }
 
-// ==============================================================================
-// 📅 ABA 2: AGENDAMENTOS (Firebase Firestore) - ATUALIZADA!
-// ==============================================================================
-
-// ... (Código anterior do arquivo Dashboard mantido igual)
-
-// ==============================================================================
-// 📅 ABA 2: AGENDAMENTOS (Firebase Firestore) - VERSÃO CORRIGIDA (EDIT + SWITCH)
-// ==============================================================================
-
+/// ============================================================================
+/// 📅 ABA 2: AGENDAMENTOS (Firebase Firestore)
+/// ============================================================================
 class _SchedulesTab extends StatelessWidget {
   final DeviceModel device;
-  final SchedulesService _service = SchedulesService(); 
+  final SchedulesService _service = SchedulesService();
 
-  _SchedulesTab({required this.device});
+  _SchedulesTab({required this.device}); // Removi o 'const' pois instanciamos _service
 
+  // Formata lista de dias [1,3] -> "Seg, Qua"
   String _formatDays(List<int> days) {
     if (days.length == 7) return "Todos os dias";
     if (days.isEmpty) return "Nenhum dia";
@@ -306,11 +361,10 @@ class _SchedulesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.transparent, 
-      
+      backgroundColor: Colors.transparent,
+
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
-          // Navegação para CRIAR (sem passar scheduleToEdit)
           Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id)),
@@ -320,7 +374,7 @@ class _SchedulesTab extends StatelessWidget {
         icon: const Icon(Icons.add),
         backgroundColor: Colors.green,
       ),
-      
+
       body: StreamBuilder<List<ScheduleModel>>(
         stream: _service.getSchedules(device.id),
         builder: (context, snapshot) {
@@ -347,57 +401,47 @@ class _SchedulesTab extends StatelessWidget {
             itemCount: schedules.length,
             itemBuilder: (context, index) {
               final schedule = schedules[index];
-              
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 elevation: 2,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 child: ListTile(
-                  // 1. CORREÇÃO DA EDIÇÃO: Adicionado onTap no ListTile
                   onTap: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
                         builder: (context) => ScheduleFormScreen(
                           deviceId: device.id,
-                          scheduleToEdit: schedule, // Passa o agendamento para editar
+                          scheduleToEdit: schedule,
                         ),
                       ),
                     );
                   },
-
                   leading: CircleAvatar(
                     backgroundColor: schedule.isEnabled ? Colors.green[100] : Colors.grey[200],
                     child: Icon(Icons.alarm, color: schedule.isEnabled ? Colors.green : Colors.grey),
                   ),
-                  
                   title: Text(
                     "${schedule.time} - ${schedule.label}",
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
-                  
                   subtitle: Text(
                     "${_formatDays(schedule.days)}\nDuração: ${schedule.durationMinutes} min",
                   ),
-                  
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // 2. CORREÇÃO DO SWITCH
                       Switch(
                         value: schedule.isEnabled,
                         activeColor: Colors.green,
                         onChanged: (val) {
-                          // Chama o serviço para atualizar o Firestore
                           _service.toggleEnabled(device.id, schedule.id, val).catchError((e) {
-                             // Se der erro (ex: permissão), mostra um aviso
-                             ScaffoldMessenger.of(context).showSnackBar(
-                               SnackBar(content: Text("Erro ao alterar: $e"), backgroundColor: Colors.red)
-                             );
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red)
+                            );
                           });
                         },
                       ),
-                      
                       IconButton(
                         icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
                         onPressed: () {
@@ -431,29 +475,30 @@ class _SchedulesTab extends StatelessWidget {
   }
 }
 
-// ==============================================================================
-// 📊 ABA 3 E 4: PLACEHOLDERS (Histórico e Configurações)
-// ==============================================================================
-
-class _HistoryTab extends StatelessWidget { 
-  final DeviceModel device; 
-  const _HistoryTab({required this.device}); 
-  @override Widget build(BuildContext context) => const Center(child: Text("Histórico (Em Breve)")); 
+/// ============================================================================
+/// 📊 ABAS PLACEHOLDER (Histórico)
+/// ============================================================================
+class _HistoryTab extends StatelessWidget {
+  final DeviceModel device;
+  const _HistoryTab({required this.device});
+  @override Widget build(BuildContext context) => const Center(child: Text("Histórico (Em Breve)"));
 }
 
-class _SettingsTab extends StatelessWidget { 
-  final DeviceModel device; 
-  const _SettingsTab({required this.device}); 
-  @override Widget build(BuildContext context) => const Center(child: Text("Configurações (Em Breve)")); 
-}
-
-// ==============================================================================
-// WIDGETS AUXILIARES REUTILIZÁVEIS
-// ==============================================================================
-
+/// ============================================================================
+/// 🧩 WIDGETS AUXILIARES
+/// ============================================================================
 class _SensorWidget extends StatelessWidget {
-  final IconData icon; final String value; final String label; final Color color;
-  const _SensorWidget({required this.icon, required this.value, required this.label, required this.color});
+  final IconData icon; 
+  final String value; 
+  final String label; 
+  final Color color;
+  
+  const _SensorWidget({
+    required this.icon, 
+    required this.value, 
+    required this.label, 
+    required this.color
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -461,7 +506,7 @@ class _SensorWidget extends StatelessWidget {
       children: [
         Container(
           padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(color: color.withValues(alpha: 0.15), shape: BoxShape.circle),
+          decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
           child: Icon(icon, color: color, size: 28),
         ),
         const SizedBox(height: 8),

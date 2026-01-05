@@ -1,12 +1,16 @@
+// ARQUIVO: lib/models/device_model.dart
+
 class DeviceSettings {
-  double targetMoisture;   // Umidade ideal (ex: 60%)
-  int manualDuration;      // Tempo de rega manual em minutos (ex: 5)
-  String deviceName;       // Nome amigável (ex: "Jardim da Frente")
+  double targetMoisture;   // Umidade alvo (Se sensor > isso, não rega)
+  int manualDuration;      // Tempo da rega manual (minutos)
+  String deviceName;       // Nome amigável
+  int timezoneOffset;      // NOVO: Deslocamento do UTC (ex: -3 para Brasília)
 
   DeviceSettings({
     required this.targetMoisture,
     required this.manualDuration,
     required this.deviceName,
+    required this.timezoneOffset,
   });
 
   // Converte JSON do Firebase para Objeto
@@ -15,6 +19,8 @@ class DeviceSettings {
       targetMoisture: (map['target_soil_moisture'] ?? 60).toDouble(),
       manualDuration: map['manual_valve_duration'] ?? 5,
       deviceName: map['device_name'] ?? 'Dispositivo Sem Nome',
+      // Se não tiver configurado ainda, assume -3 (Brasília) como padrão
+      timezoneOffset: map['timezone_offset'] ?? -3,
     );
   }
 
@@ -24,12 +30,13 @@ class DeviceSettings {
       'target_soil_moisture': targetMoisture,
       'manual_valve_duration': manualDuration,
       'device_name': deviceName,
+      'timezone_offset': timezoneOffset,
     };
   }
 }
 
 class DeviceModel {
-  final String id; // ID do Hardware (ex: ESP32-A1B2)
+  final String id;
   final bool isOnline;
   final DeviceSettings settings;
 

@@ -1,3 +1,5 @@
+// ARQUIVO: lib/services/device_service.dart
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/device_model.dart';
@@ -16,13 +18,13 @@ class DeviceService {
         .doc(user.uid)
         .snapshots()
         .map((snapshot) {
-          if (!snapshot.exists) return [];
-          final data = snapshot.data();
-          if (data == null || !data.containsKey('my_devices')) return [];
-          
-          // Converte a lista do Firebase para lista de Strings
-          return List<String>.from(data['my_devices']);
-        });
+      if (!snapshot.exists) return [];
+      final data = snapshot.data();
+      if (data == null || !data.containsKey('my_devices')) return [];
+
+      // Converte a lista do Firebase para lista de Strings
+      return List<String>.from(data['my_devices']);
+    });
   }
 
   // Busca os detalhes completos de um dispositivo específico
@@ -32,16 +34,21 @@ class DeviceService {
         .doc(deviceId)
         .snapshots()
         .map((doc) {
-          if (!doc.exists) {
-            // Retorna um modelo padrão caso não ache (evita crash)
-            return DeviceModel(
-              id: deviceId, 
-              isOnline: false, 
-              settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: 'Desconhecido')
-            );
-          }
-          return DeviceModel.fromFirestore(doc.data()!, doc.id);
-        });
+      if (!doc.exists) {
+        // Retorna um modelo padrão caso não ache (evita crash)
+        return DeviceModel(
+            id: deviceId,
+            isOnline: false,
+            settings: DeviceSettings(
+              targetMoisture: 0, 
+              manualDuration: 0, 
+              deviceName: 'Desconhecido',
+              timezoneOffset: -3 // Default Brasília se não encontrar
+            )
+        );
+      }
+      return DeviceModel.fromFirestore(doc.data()!, doc.id);
+    });
   }
 
   // Adicionar Dispositivo (Vincular ao Usuário)
@@ -51,7 +58,7 @@ class DeviceService {
 
     // 1. Verifica se o dispositivo existe na coleção 'devices' (Segurança)
     final deviceDoc = await _firestore.collection('devices').doc(deviceId).get();
-    
+
     // Se não existir, criamos o registro inicial do dispositivo
     if (!deviceDoc.exists) {
       await _firestore.collection('devices').doc(deviceId).set({
@@ -63,6 +70,7 @@ class DeviceService {
           'device_name': initialName,
           'target_soil_moisture': 60,
           'manual_valve_duration': 5,
+          'timezone_offset': -3, // Adicionamos o padrão Brasília na criação
         }
       });
     }
@@ -70,6 +78,15 @@ class DeviceService {
     // 2. Adiciona o ID no array 'my_devices' do usuário
     await _firestore.collection('users').doc(user.uid).update({
       'my_devices': FieldValue.arrayUnion([deviceId])
+    });
+  }
+
+  // --- NOVO MÉTODO ADICIONADO AQUI ---
+  // Atualiza as configurações (Nome, Umidade, Tempo Manual, Fuso) no Firestore
+  Future<void> updateDeviceSettings(String deviceId, DeviceSettings newSettings) async {
+    // Atualiza apenas o campo 'settings' dentro do documento do dispositivo
+    await _firestore.collection('devices').doc(deviceId).update({
+      'settings': newSettings.toMap(),
     });
   }
 }
