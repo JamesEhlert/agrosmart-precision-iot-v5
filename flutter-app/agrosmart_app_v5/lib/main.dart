@@ -1,9 +1,11 @@
+// ARQUIVO: lib/main.dart
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 import 'screens/login_screen.dart';
-import 'screens/devices_list_screen.dart'; // Importamos a tela nova
+import 'screens/dashboard_screen.dart'; // <--- Agora usamos o Dashboard como home
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,9 +31,7 @@ class AgroSmartApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
       ),
-      // AQUI ESTÁ A MÁGICA:
-      // O StreamBuilder fica ouvindo o Firebase. 
-      // Se tiver usuário (snapshot.hasData), manda pra Lista. Se não, manda pro Login.
+      // O StreamBuilder define se vai para Login ou Dashboard direto
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
@@ -39,9 +39,10 @@ class AgroSmartApp extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasData) {
-            return const DevicesListScreen(); // Usuário logado -> Lista de Dispositivos
+            // Se logado, vai direto para o Dashboard (que gerencia a lista de devices)
+            return const DashboardScreen(); 
           }
-          return const LoginScreen(); // Não logado -> Tela de Login
+          return const LoginScreen();
         },
       ),
     );

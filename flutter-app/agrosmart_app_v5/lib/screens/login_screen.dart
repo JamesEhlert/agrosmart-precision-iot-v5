@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/auth_service.dart';
 import 'signup_screen.dart';
-import 'devices_list_screen.dart'; // <--- Agora importamos a tela de dispositivos
+import 'dashboard_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -49,11 +49,12 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // Navegação para a lista de dispositivos
-  void _goToDevicesList() {
+// Navegação para a Home (Dashboard)
+  void _goToDevicesList() { // Pode manter o nome se quiser, mas o destino muda
     if (mounted) {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const DevicesListScreen()),
+        // MUDANÇA AQUI: Vai para DashboardScreen
+        MaterialPageRoute(builder: (context) => const DashboardScreen()),
       );
     }
   }

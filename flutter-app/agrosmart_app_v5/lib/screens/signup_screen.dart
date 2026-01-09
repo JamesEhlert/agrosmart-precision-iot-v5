@@ -1,6 +1,8 @@
+// ARQUIVO: lib/screens/signup_screen.dart
+
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
-import 'devices_list_screen.dart'; // <--- Importamos a tela nova aqui
+import 'dashboard_screen.dart'; // <--- CORREÇÃO: Importa o Dashboard agora
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -32,13 +34,15 @@ class _SignUpScreenState extends State<SignUpScreen> {
         _passwordController.text.trim(),
         _nameController.text.trim(),
       );
-      if (mounted) {
-        // Remove histórico de telas e vai para a Lista de Dispositivos
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (context) => const DevicesListScreen()),
-          (route) => false,
-        );
-      }
+      
+      // Verifica se a tela ainda existe antes de navegar
+      if (!mounted) return;
+
+      // CORREÇÃO: Remove histórico e vai para o DashboardScreen
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (context) => const DashboardScreen()),
+        (route) => false,
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -83,9 +87,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
               child: ElevatedButton(
                 onPressed: _isLoading ? null : _register,
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                child: _isLoading 
-                  ? const CircularProgressIndicator(color: Colors.white) 
-                  : const Text("CADASTRAR"),
+                child: _isLoading
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text("CADASTRAR"),
               ),
             ),
           ],

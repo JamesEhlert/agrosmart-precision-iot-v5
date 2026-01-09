@@ -1,125 +1,326 @@
 // ARQUIVO: lib/screens/dashboard_screen.dart
 
-import 'dart:async'; // Para o Timer de atualização automática da telemetria
-import 'package:flutter/material.dart'; // Componentes visuais do Flutter
-import 'package:intl/intl.dart'; // Para formatar datas e horas
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
-// --- IMPORTAÇÕES DOS NOSSOS MÓDULOS ---
 import '../models/device_model.dart';
 import '../models/telemetry_model.dart';
 import '../models/schedule_model.dart';
 
 import '../services/aws_service.dart';
 import '../services/schedules_service.dart';
-import '../services/device_service.dart'; // IMPORTANTE: Para ouvir atualizações do device
+import '../services/device_service.dart';
+import '../services/auth_service.dart';
 
-import 'schedule_form_screen.dart'; // Tela de formulário de agendamento
-import 'settings_tab.dart'; // Tela de configurações (Engrenagem)
+import 'schedule_form_screen.dart';
+import 'settings_tab.dart';
+import 'history_tab.dart';
+import 'login_screen.dart';
 
-/// ============================================================================
-/// TELA PRINCIPAL (DASHBOARD)
-/// Gerencia as 4 abas: Monitor, Agenda, Histórico, Configurações.
-/// ============================================================================
+// ============================================================================
+// ⚙️ ÁREA DE CONFIGURAÇÃO DO DASHBOARD
+// ============================================================================
+
+// CORREÇÃO: Nomes em lowerCamelCase conforme padrão Dart
+const int refreshIntervalSeconds = 30;
+const int offlineThresholdMinutes = 12;
+
+// ============================================================================
+
 class DashboardScreen extends StatefulWidget {
-  final DeviceModel device; // Dispositivo inicial (passado pela lista)
-
-  const DashboardScreen({super.key, required this.device});
+  const DashboardScreen({super.key});
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  int _currentIndex = 0; // Controla qual aba está visível
-  final DeviceService _deviceService = DeviceService(); // Para ouvir mudanças nas configurações
+  final DeviceService _deviceService = DeviceService();
+  final AuthService _authService = AuthService();
+  final AwsService _awsService = AwsService();
+  
+  String? _selectedDeviceId;
+  int _currentIndex = 0;     
+  
+  TelemetryModel? _telemetryData; 
+  bool _isLoadingTelemetry = true;
+  Timer? _refreshTimer;
+
+  bool get _isDeviceOnline {
+    if (_telemetryData == null) return false;
+    final now = DateTime.now().toUtc();
+    final difference = now.difference(_telemetryData!.timestamp);
+    // Usa a constante corrigida
+    return difference.inMinutes < offlineThresholdMinutes;
+  }
 
   @override
-  Widget build(BuildContext context) {
-    // 1. STREAM BUILDER GLOBAL
-    // Envolvemos todo o Scaffold num StreamBuilder do Dispositivo.
-    // Isso garante que se mudarmos o nome ou tempo de rega na aba Config,
-    // a aba Monitor (e o cabeçalho) atualizam imediatamente.
-    return StreamBuilder<DeviceModel>(
-      stream: _deviceService.getDeviceStream(widget.device.id),
-      initialData: widget.device, // Começa com os dados que já temos
-      builder: (context, snapshot) {
-        
-        // Se houver erro ou estiver carregando sem dados, usamos o widget.device como fallback
-        final device = snapshot.data ?? widget.device;
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
 
-        // Lista das páginas (Abas) - Recriadas com os dados atualizados (device)
-        final List<Widget> pages = [
-          _MonitorTab(device: device),     // Aba 0: Monitoramento (Recebe device atualizado)
-          _SchedulesTab(device: device),   // Aba 1: Agendamentos
-          _HistoryTab(device: device),     // Aba 2: Histórico (Placeholder)
-          SettingsTab(device: device),     // Aba 3: Configurações (Sua nova tela)
-        ];
+  void _startTelemetryUpdates(String deviceId) {
+    _refreshTimer?.cancel();
+    _fetchTelemetry(deviceId);
+    
+    // Usa a constante corrigida
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: refreshIntervalSeconds), 
+      (_) => _fetchTelemetry(deviceId)
+    );
+  }
 
-        return Scaffold(
-          // --- CABEÇALHO (APP BAR) ---
-          appBar: AppBar(
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Nome do Dispositivo (Atualiza em tempo real se mudar nas configs)
-                Text(device.settings.deviceName, style: const TextStyle(fontSize: 18)),
-                Text(device.id, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            actions: [
-              // Indicador de Status (Online/Offline)
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 16.0),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: device.isOnline ? Colors.greenAccent : Colors.redAccent,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      device.isOnline ? "ONLINE" : "OFFLINE",
-                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black87),
-                    ),
-                  ),
-                ),
-              )
-            ],
-          ),
+  Future<void> _fetchTelemetry(String deviceId) async {
+    try {
+      final data = await _awsService.getLatestTelemetry(deviceId);
+      if (mounted) {
+        setState(() {
+          _telemetryData = data;
+          _isLoadingTelemetry = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingTelemetry = false);
+    }
+  }
 
-          // --- CORPO DA TELA ---
-          body: pages[_currentIndex],
+  void _showDevicePicker(List<String> userDevices) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) { 
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text("Meus Dispositivos", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              
+              ...userDevices.map((deviceId) => ListTile(
+                leading: Icon(Icons.router, color: deviceId == _selectedDeviceId ? Colors.green : Colors.grey),
+                title: Text(deviceId, style: TextStyle(fontWeight: deviceId == _selectedDeviceId ? FontWeight.bold : FontWeight.normal)),
+                trailing: deviceId == _selectedDeviceId ? const Icon(Icons.check, color: Colors.green) : null,
+                onTap: () {
+                  setState(() {
+                    _selectedDeviceId = deviceId;
+                    _telemetryData = null;
+                    _isLoadingTelemetry = true;
+                  });
+                  _startTelemetryUpdates(deviceId);
+                  Navigator.pop(ctx);
+                },
+              )),
 
-          // --- BARRA DE NAVEGAÇÃO INFERIOR ---
-          bottomNavigationBar: BottomNavigationBar(
-            currentIndex: _currentIndex,
-            onTap: (index) => setState(() => _currentIndex = index),
-            type: BottomNavigationBarType.fixed,
-            selectedItemColor: Colors.green,
-            unselectedItemColor: Colors.grey,
-            showUnselectedLabels: true,
-            items: const [
-              BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: "Monitor"),
-              BottomNavigationBarItem(icon: Icon(Icons.calendar_month_outlined), activeIcon: Icon(Icons.calendar_month), label: "Agenda"),
-              BottomNavigationBarItem(icon: Icon(Icons.show_chart), label: "Histórico"),
-              BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), activeIcon: Icon(Icons.settings), label: "Config"),
+              const Divider(),
+              ListTile(
+                leading: const CircleAvatar(backgroundColor: Colors.green, child: Icon(Icons.add, color: Colors.white)),
+                title: const Text("Adicionar Novo Dispositivo"),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Future.delayed(const Duration(milliseconds: 200), () {
+                     if (mounted) _showAddDeviceDialog();
+                  });
+                },
+              ),
             ],
           ),
         );
-      }
+      },
+    );
+  }
+
+  void _showAddDeviceDialog() {
+    final idController = TextEditingController();
+    final nameController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Novo Dispositivo"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: idController, decoration: const InputDecoration(labelText: "ID Serial", hintText: "Ex: ESP32-001")),
+            const SizedBox(height: 10),
+            TextField(controller: nameController, decoration: const InputDecoration(labelText: "Nome", hintText: "Ex: Jardim")),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancelar")),
+          ElevatedButton(
+            onPressed: () async {
+              try {
+                await _deviceService.linkDeviceToUser(idController.text.trim(), nameController.text.trim());
+                if (ctx.mounted) Navigator.pop(ctx);
+                if (_selectedDeviceId == null && mounted) {
+                   final newId = idController.text.trim();
+                   setState(() {
+                     _selectedDeviceId = newId;
+                     _isLoadingTelemetry = true;
+                   });
+                   _startTelemetryUpdates(newId);
+                }
+              } catch (e) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
+              }
+            },
+            child: const Text("Adicionar"),
+          )
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handleLogout() async {
+    await _authService.logout();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (c) => const LoginScreen()), (route) => false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<String>>(
+      stream: _deviceService.getUserDeviceIds(),
+      builder: (context, snapshotList) {
+        if (snapshotList.connectionState == ConnectionState.waiting) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+
+        final userDevices = snapshotList.data ?? [];
+
+        if (userDevices.isEmpty) {
+          return Scaffold(
+            appBar: AppBar(
+              title: const Text("AgroSmart V5"),
+              backgroundColor: Colors.green, foregroundColor: Colors.white,
+              actions: [
+                 PopupMenuButton<String>(
+                  onSelected: (value) { if (value == 'logout') _handleLogout(); },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(value: 'logout', child: Row(children: [Icon(Icons.logout, color: Colors.red), SizedBox(width: 8), Text("Sair da Conta")])),
+                  ],
+                  child: const Padding(padding: EdgeInsets.only(right: 16.0), child: CircleAvatar(backgroundColor: Colors.white24, child: Icon(Icons.person, color: Colors.white))),
+                ),
+              ],
+            ),
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.add_circle_outline, size: 80, color: Colors.green),
+                  const SizedBox(height: 16),
+                  const Text("Bem-vindo! Adicione seu primeiro dispositivo.", style: TextStyle(fontSize: 16)),
+                  const SizedBox(height: 20),
+                  ElevatedButton(
+                    onPressed: _showAddDeviceDialog,
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                    child: const Text("ADICIONAR AGORA"),
+                  )
+                ],
+              ),
+            ),
+          );
+        }
+
+        if (_selectedDeviceId == null || !userDevices.contains(_selectedDeviceId)) {
+          Future.microtask(() {
+            if (mounted) {
+              setState(() {
+                _selectedDeviceId = userDevices.first;
+                _isLoadingTelemetry = true;
+              });
+              _startTelemetryUpdates(userDevices.first);
+            }
+          });
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+
+        return StreamBuilder<DeviceModel>(
+          stream: _deviceService.getDeviceStream(_selectedDeviceId!),
+          builder: (context, snapshotDevice) {
+            
+            final device = snapshotDevice.data ?? DeviceModel(
+              id: _selectedDeviceId!, isOnline: false, 
+              settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: "Carregando...", timezoneOffset: -3)
+            );
+
+            final isReallyOnline = _isDeviceOnline;
+
+            final List<Widget> pages = [
+              _MonitorTab(
+                device: device, 
+                telemetryData: _telemetryData, 
+                isLoading: _isLoadingTelemetry,
+                onRefreshRequest: () => _fetchTelemetry(device.id)
+              ),
+              _SchedulesTab(device: device),
+              HistoryTab(device: device),
+              SettingsTab(device: device),
+            ];
+
+            return Scaffold(
+              appBar: AppBar(
+                backgroundColor: Colors.green, foregroundColor: Colors.white, elevation: 0, automaticallyImplyLeading: false,
+                title: GestureDetector(
+                  onTap: () => _showDevicePicker(userDevices),
+                  child: Row(children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(color: Colors.green[700], borderRadius: BorderRadius.circular(20)),
+                      child: Row(children: [
+                        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(device.settings.deviceName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                          Row(children: [
+                            Container(width: 8, height: 8, decoration: BoxDecoration(color: isReallyOnline ? Colors.lightGreenAccent : Colors.redAccent, shape: BoxShape.circle)),
+                            const SizedBox(width: 4),
+                            Text("${device.id} • ${isReallyOnline ? 'Online' : 'Offline'}", style: const TextStyle(fontSize: 10, color: Colors.white70)),
+                          ]),
+                        ]),
+                        const SizedBox(width: 8),
+                        const Icon(Icons.arrow_drop_down, color: Colors.white)
+                      ]),
+                    ),
+                  ]),
+                ),
+                actions: [
+                  PopupMenuButton<String>(
+                    onSelected: (value) { if (value == 'logout') _handleLogout(); },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(enabled: false, child: Text("Minha Conta", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(value: 'logout', child: Row(children: [Icon(Icons.logout, color: Colors.red, size: 20), SizedBox(width: 10), Text("Sair", style: TextStyle(color: Colors.red))])),
+                    ],
+                    child: const Padding(padding: EdgeInsets.only(right: 16.0), child: CircleAvatar(backgroundColor: Colors.white24, child: Icon(Icons.person, color: Colors.white))),
+                  ),
+                ],
+              ),
+              body: pages[_currentIndex],
+              bottomNavigationBar: BottomNavigationBar(
+                currentIndex: _currentIndex, onTap: (index) => setState(() => _currentIndex = index),
+                type: BottomNavigationBarType.fixed, selectedItemColor: Colors.green, unselectedItemColor: Colors.grey, showUnselectedLabels: true,
+                items: const [
+                  BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: "Monitor"),
+                  BottomNavigationBarItem(icon: Icon(Icons.calendar_month_outlined), activeIcon: Icon(Icons.calendar_month), label: "Agenda"),
+                  BottomNavigationBarItem(icon: Icon(Icons.history), activeIcon: Icon(Icons.history), label: "Histórico"),
+                  BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), activeIcon: Icon(Icons.settings), label: "Config"),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
 
-/// ============================================================================
-/// 🟢 ABA 1: MONITORAMENTO (AWS + Controle Manual)
-/// ============================================================================
 class _MonitorTab extends StatefulWidget {
   final DeviceModel device;
-  const _MonitorTab({required this.device});
+  final TelemetryModel? telemetryData;
+  final bool isLoading;
+  final VoidCallback onRefreshRequest;
+
+  const _MonitorTab({required this.device, required this.telemetryData, required this.isLoading, required this.onRefreshRequest});
 
   @override
   State<_MonitorTab> createState() => _MonitorTabState();
@@ -127,205 +328,108 @@ class _MonitorTab extends StatefulWidget {
 
 class _MonitorTabState extends State<_MonitorTab> {
   final AwsService _awsService = AwsService();
-  TelemetryModel? _data;          // Dados dos sensores vindos da AWS
-  bool _isLoadingData = true;     // Loading inicial da telemetria
-  bool _isSendingCommand = false; // Loading do botão de ação
-  String _errorMessage = '';      // Mensagem de erro amigável
-  Timer? _timer;                  // Timer para buscar dados periodicamente
+  bool _isSendingCommand = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _fetchData();
-    // Atualiza a cada 30 segundos automaticamente
-    _timer = Timer.periodic(const Duration(seconds: 30), (timer) => _fetchData());
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel(); // Importante: Parar o timer ao sair da tela para não gastar bateria
-    super.dispose();
-  }
-
-  /// Busca dados na AWS (GET)
-  Future<void> _fetchData() async {
-    if (!mounted) return;
-    // Só mostra loading na primeira vez, nas atualizações automáticas não
-    if (_data == null) {
-      setState(() { _isLoadingData = true; _errorMessage = ''; });
-    }
-
-    try {
-      final data = await _awsService.getLatestTelemetry(widget.device.id);
-      if (mounted) {
-        setState(() {
-          _data = data;
-          _isLoadingData = false;
-          if (data == null) _errorMessage = "Dispositivo conectado, mas sem dados recentes.";
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoadingData = false;
-          // Só mostra erro se não tivermos dados antigos para mostrar
-          if (_data == null) _errorMessage = "Erro de conexão.";
-        });
-      }
-    }
-  }
-
-  /// Envia comando manual (POST) respeitando a configuração do usuário
   Future<void> _sendManualIrrigation() async {
     if (_isSendingCommand) return;
     setState(() => _isSendingCommand = true);
 
     try {
-      // 1. Pega a duração configurada (em minutos) e converte para segundos
       final int durationMinutes = widget.device.settings.manualDuration;
       final int durationSeconds = durationMinutes * 60;
-
-      // 2. Envia para a AWS
-      final success = await _awsService.sendCommand(
-        widget.device.id, 
-        "on", 
-        durationSeconds
-      );
-
+      final success = await _awsService.sendCommand(widget.device.id, "on", durationSeconds);
       if (!mounted) return;
-
       if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("✅ Comando enviado! Irrigando por $durationMinutes min."),
-          backgroundColor: Colors.green,
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("✅ Comando enviado! Irrigando por $durationMinutes min."), backgroundColor: Colors.green));
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("❌ Falha no comando. Verifique a conexão."),
-          backgroundColor: Colors.red,
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("❌ Falha no comando. Verifique a conexão."), backgroundColor: Colors.red));
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red)
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
     } finally {
       if (mounted) setState(() => _isSendingCommand = false);
     }
   }
 
-  /// Auxiliar para formatar a data considerando o Fuso Horário Configurado
   String _formatLastUpdate(DateTime utcTime) {
-    // Adiciona o offset (ex: -3 horas) ao horário UTC que veio da AWS
     final localTime = utcTime.add(Duration(hours: widget.device.settings.timezoneOffset));
     return DateFormat('dd/MM HH:mm:ss').format(localTime);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Exibe Loading Centralizado se não tiver dados ainda
-    if (_isLoadingData) return const Center(child: CircularProgressIndicator(color: Colors.green));
+    if (widget.isLoading) return const Center(child: CircularProgressIndicator(color: Colors.green));
 
-    // Exibe Erro se falhou e não tem dados cache
-    if ((_errorMessage.isNotEmpty && _data == null) || (_data == null && _errorMessage.isEmpty)) {
+    final data = widget.telemetryData;
+    if (data == null) {
       return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.cloud_off, size: 60, color: Colors.grey),
-            const SizedBox(height: 16),
-            Text(_errorMessage.isEmpty ? "Sem dados." : _errorMessage, style: const TextStyle(color: Colors.grey)),
-            const SizedBox(height: 10),
-            ElevatedButton(onPressed: _fetchData, child: const Text("Tentar Novamente"))
-          ],
-        ),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Icon(Icons.cloud_off, size: 60, color: Colors.grey),
+          const SizedBox(height: 16),
+          const Text("Sem dados recentes.", style: TextStyle(color: Colors.grey)),
+          const SizedBox(height: 10),
+          ElevatedButton(onPressed: widget.onRefreshRequest, child: const Text("Tentar Novamente"))
+        ]),
       );
     }
 
     return RefreshIndicator(
-      onRefresh: _fetchData,
+      onRefresh: () async => widget.onRefreshRequest(),
       color: Colors.green,
       child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(), // Permite arrastar pra atualizar mesmo se lista for pequena
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Texto de última atualização com Fuso Horário aplicado
-            Text(
-              "Atualizando a cada 30s • Última: ${_formatLastUpdate(_data!.timestamp)}",
-              textAlign: TextAlign.right, 
-              style: TextStyle(color: Colors.grey[600], fontSize: 12)
-            ),
+            // Usa a constante corrigida
+            Text("Atualizando a cada $refreshIntervalSeconds s • Última: ${_formatLastUpdate(data.timestamp)}", textAlign: TextAlign.right, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
             const SizedBox(height: 10),
-
-            // --- CARD 1: AMBIENTE ---
             _buildSectionTitle("Ambiente & Solo"),
             Card(
-              elevation: 4, 
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _SensorWidget(icon: Icons.thermostat, value: "${_data!.airTemp.toStringAsFixed(1)}°C", label: "Temp Ar", color: Colors.orange),
-                    _SensorWidget(icon: Icons.water_drop_outlined, value: "${_data!.airHumidity.toStringAsFixed(0)}%", label: "Umid. Ar", color: Colors.blueAccent),
-                    _SensorWidget(icon: Icons.grass, value: "${_data!.soilMoisture.toStringAsFixed(0)}%", label: "Umid. Solo", color: Colors.brown),
-                  ],
-                ),
+                child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+                  _SensorWidget(icon: Icons.thermostat, value: "${data.airTemp.toStringAsFixed(1)}°C", label: "Temp Ar", color: Colors.orange),
+                  _SensorWidget(icon: Icons.water_drop_outlined, value: "${data.airHumidity.toStringAsFixed(0)}%", label: "Umid. Ar", color: Colors.blueAccent),
+                  _SensorWidget(icon: Icons.grass, value: "${data.soilMoisture.toStringAsFixed(0)}%", label: "Umid. Solo", color: Colors.brown),
+                ]),
               ),
             ),
             const SizedBox(height: 16),
-
-            // --- CARD 2: EXTERNO ---
             _buildSectionTitle("Externo"),
             Card(
-              elevation: 4, 
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _SensorWidget(icon: Icons.wb_sunny, value: _data!.uvIndex.toStringAsFixed(1), label: "Índice UV", color: Colors.amber),
-                    _SensorWidget(icon: Icons.light_mode, value: _data!.lightLevel.toStringAsFixed(0), label: "Luz (Lux)", color: Colors.yellow[700]!),
-                    _SensorWidget(icon: Icons.cloud, value: "${_data!.rainRaw}", label: "Chuva (Raw)", color: Colors.blueGrey),
-                  ],
-                ),
+                child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+                  _SensorWidget(icon: Icons.wb_sunny, value: data.uvIndex.toStringAsFixed(1), label: "Índice UV", color: Colors.amber),
+                  _SensorWidget(icon: Icons.light_mode, value: data.lightLevel.toStringAsFixed(0), label: "Luz (Lux)", color: Colors.yellow[700]!),
+                  _SensorWidget(icon: Icons.cloud, value: "${data.rainRaw}", label: "Chuva (Raw)", color: Colors.blueGrey),
+                ]),
               ),
             ),
             const SizedBox(height: 24),
-
-            // --- BOTÃO DE AÇÃO DINÂMICO ---
             _buildSectionTitle("Ações"),
             SizedBox(
               height: 50,
               child: ElevatedButton(
                 onPressed: _isSendingCommand ? null : _sendManualIrrigation,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue, 
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: Colors.blue.withOpacity(0.6), // Correção para versão nova do Flutter
+                  backgroundColor: Colors.blue, foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.blue.withValues(alpha: 0.6),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))
                 ),
                 child: _isSendingCommand
                   ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : Row(
-                      mainAxisAlignment: MainAxisAlignment.center, 
-                      children: [
-                        const Icon(Icons.water), 
-                        const SizedBox(width: 8), 
-                        // TEXTO DINÂMICO: Mostra o tempo configurado pelo usuário
-                        Text("IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration} min)")
-                      ]
-                    ),
+                  : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      const Icon(Icons.water), const SizedBox(width: 8), 
+                      Text("IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration} min)")
+                    ]),
               ),
             ),
-            
-            const SizedBox(height: 8),
-            Center(child: Text("Tempo configurável na aba Configurações", style: TextStyle(fontSize: 10, color: Colors.grey[400]))),
           ],
         ),
       ),
@@ -333,23 +437,16 @@ class _MonitorTabState extends State<_MonitorTab> {
   }
 
   Widget _buildSectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 8, bottom: 8), 
-      child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black54))
-    );
+    return Padding(padding: const EdgeInsets.only(left: 8, bottom: 8), child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black54)));
   }
 }
 
-/// ============================================================================
-/// 📅 ABA 2: AGENDAMENTOS (Firebase Firestore)
-/// ============================================================================
 class _SchedulesTab extends StatelessWidget {
   final DeviceModel device;
   final SchedulesService _service = SchedulesService();
 
-  _SchedulesTab({required this.device}); // Removi o 'const' pois instanciamos _service
+  _SchedulesTab({required this.device});
 
-  // Formata lista de dias [1,3] -> "Seg, Qua"
   String _formatDays(List<int> days) {
     if (days.length == 7) return "Todos os dias";
     if (days.isEmpty) return "Nenhum dia";
@@ -362,19 +459,12 @@ class _SchedulesTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id)),
-          );
+          Navigator.push(context, MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id)));
         },
-        label: const Text("Novo"),
-        icon: const Icon(Icons.add),
-        backgroundColor: Colors.green,
+        label: const Text("Novo"), icon: const Icon(Icons.add), backgroundColor: Colors.green,
       ),
-
       body: StreamBuilder<List<ScheduleModel>>(
         stream: _service.getSchedules(device.id),
         builder: (context, snapshot) {
@@ -385,14 +475,10 @@ class _SchedulesTab extends StatelessWidget {
 
           if (schedules.isEmpty) {
             return const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.calendar_month_outlined, size: 60, color: Colors.grey),
-                  SizedBox(height: 10),
-                  Text("Nenhum agendamento criado."),
-                ],
-              ),
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(Icons.calendar_month_outlined, size: 60, color: Colors.grey),
+                SizedBox(height: 10), Text("Nenhum agendamento criado."),
+              ]),
             );
           }
 
@@ -403,42 +489,25 @@ class _SchedulesTab extends StatelessWidget {
               final schedule = schedules[index];
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                elevation: 2,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 child: ListTile(
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => ScheduleFormScreen(
-                          deviceId: device.id,
-                          scheduleToEdit: schedule,
-                        ),
-                      ),
-                    );
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id, scheduleToEdit: schedule)));
                   },
-                  leading: CircleAvatar(
-                    backgroundColor: schedule.isEnabled ? Colors.green[100] : Colors.grey[200],
-                    child: Icon(Icons.alarm, color: schedule.isEnabled ? Colors.green : Colors.grey),
-                  ),
-                  title: Text(
-                    "${schedule.time} - ${schedule.label}",
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(
-                    "${_formatDays(schedule.days)}\nDuração: ${schedule.durationMinutes} min",
-                  ),
+                  leading: CircleAvatar(backgroundColor: schedule.isEnabled ? Colors.green[100] : Colors.grey[200], child: Icon(Icons.alarm, color: schedule.isEnabled ? Colors.green : Colors.grey)),
+                  title: Text("${schedule.time} - ${schedule.label}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text("${_formatDays(schedule.days)}\nDuração: ${schedule.durationMinutes} min"),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Switch(
                         value: schedule.isEnabled,
-                        activeColor: Colors.green,
+                        // CORREÇÃO: Usando activeTrackColor (Flutter novo)
+                        activeTrackColor: Colors.green, 
+                        activeColor: Colors.white,
                         onChanged: (val) {
                           _service.toggleEnabled(device.id, schedule.id, val).catchError((e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red)
-                            );
+                            if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
                           });
                         },
                       ),
@@ -451,13 +520,7 @@ class _SchedulesTab extends StatelessWidget {
                               title: const Text("Excluir?"),
                               actions: [
                                 TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancelar")),
-                                TextButton(
-                                  onPressed: () {
-                                    _service.deleteSchedule(device.id, schedule.id);
-                                    Navigator.pop(ctx);
-                                  },
-                                  child: const Text("Excluir", style: TextStyle(color: Colors.red)),
-                                )
+                                TextButton(onPressed: () { _service.deleteSchedule(device.id, schedule.id); Navigator.pop(ctx); }, child: const Text("Excluir", style: TextStyle(color: Colors.red)))
                               ],
                             )
                           );
@@ -475,44 +538,18 @@ class _SchedulesTab extends StatelessWidget {
   }
 }
 
-/// ============================================================================
-/// 📊 ABAS PLACEHOLDER (Histórico)
-/// ============================================================================
-class _HistoryTab extends StatelessWidget {
-  final DeviceModel device;
-  const _HistoryTab({required this.device});
-  @override Widget build(BuildContext context) => const Center(child: Text("Histórico (Em Breve)"));
-}
-
-/// ============================================================================
-/// 🧩 WIDGETS AUXILIARES
-/// ============================================================================
 class _SensorWidget extends StatelessWidget {
-  final IconData icon; 
-  final String value; 
-  final String label; 
-  final Color color;
+  final IconData icon; final String value; final String label; final Color color;
   
-  const _SensorWidget({
-    required this.icon, 
-    required this.value, 
-    required this.label, 
-    required this.color
-  });
+  const _SensorWidget({required this.icon, required this.value, required this.label, required this.color});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
-          child: Icon(icon, color: color, size: 28),
-        ),
+    return Column(children: [
+        Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: color.withValues(alpha: 0.15), shape: BoxShape.circle), child: Icon(icon, color: color, size: 28)),
         const SizedBox(height: 8),
         Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-      ],
-    );
+    ]);
   }
 }

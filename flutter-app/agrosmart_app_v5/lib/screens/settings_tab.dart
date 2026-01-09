@@ -17,22 +17,55 @@ class _SettingsTabState extends State<SettingsTab> {
   final _formKey = GlobalKey<FormState>();
   final _deviceService = DeviceService();
 
-  // Controladores e Variáveis de Estado
+  // Controladores
   late TextEditingController _nameController;
-  late double _targetMoisture;
-  late double _manualDuration;
-  late int _timezoneOffset;
+  
+  // Variáveis de Estado
+  double _targetMoisture = 60;
+  double _manualDuration = 5;
+  int _timezoneOffset = -3;
   bool _isLoading = false;
+  
+  // Variável de controle para inicialização segura
+  bool _isInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    // Inicializa os campos com os valores atuais do dispositivo
+    // Inicializa o controlador aqui para garantir que não seja null
+    _nameController = TextEditingController();
+    _updateFieldsFromDevice();
+  }
+
+  @override
+  void didUpdateWidget(covariant SettingsTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Se o dispositivo mudou, atualizamos os campos
+    if (oldWidget.device != widget.device) {
+      _updateFieldsFromDevice();
+    }
+  }
+
+  // Método centralizado para preencher os campos com dados do modelo
+  void _updateFieldsFromDevice() {
     final settings = widget.device.settings;
-    _nameController = TextEditingController(text: settings.deviceName);
-    _targetMoisture = settings.targetMoisture;
-    _manualDuration = settings.manualDuration.toDouble();
-    _timezoneOffset = settings.timezoneOffset;
+
+    // Atualiza o texto apenas se não estivermos editando ativamente ou se for a primeira vez
+    if (!_isInitialized || _nameController.text != settings.deviceName) {
+      _nameController.text = settings.deviceName;
+    }
+
+    setState(() {
+      _targetMoisture = settings.targetMoisture;
+      
+      // Proteção contra valor 0.0 no Slider (que tem min: 1.0)
+      double dur = settings.manualDuration.toDouble();
+      if (dur < 1.0) dur = 5.0; // Valor seguro padrão
+      _manualDuration = dur;
+
+      _timezoneOffset = settings.timezoneOffset;
+      _isInitialized = true;
+    });
   }
 
   @override
@@ -41,7 +74,6 @@ class _SettingsTabState extends State<SettingsTab> {
     super.dispose();
   }
 
-  // Função para salvar no Firebase
   Future<void> _saveSettings() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -59,7 +91,7 @@ class _SettingsTabState extends State<SettingsTab> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("✅ Configurações salvas com sucesso!"), backgroundColor: Colors.green),
+          const SnackBar(content: Text("✅ Configurações salv com sucesso!"), backgroundColor: Colors.green),
         );
       }
     } catch (e) {
@@ -73,10 +105,52 @@ class _SettingsTabState extends State<SettingsTab> {
     }
   }
 
+  Future<void> _deleteDevice() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Remover Dispositivo?"),
+        content: const Text("Você perderá o acesso a este dispositivo. Seus dados serão mantidos para recuperação futura via suporte."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancelar")),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true), 
+            child: const Text("REMOVER", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold))
+          ),
+        ],
+      )
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await _deviceService.unlinkDeviceFromUser(widget.device.id);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Dispositivo desvinculado com sucesso."), backgroundColor: Colors.grey),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Erro ao remover: $e"), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Se por algum motivo ainda não inicializou, mostra loading
+    if (!_isInitialized) return const Center(child: CircularProgressIndicator());
+
     return Scaffold(
-      backgroundColor: Colors.grey[50], // Fundo levemente cinza
+      backgroundColor: Colors.grey[50],
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
@@ -112,7 +186,6 @@ class _SettingsTabState extends State<SettingsTab> {
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     children: [
-                      // --- SLIDER DE UMIDADE ---
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -120,15 +193,10 @@ class _SettingsTabState extends State<SettingsTab> {
                           Chip(label: Text("${_targetMoisture.toInt()}%"), backgroundColor: Colors.blue[100]),
                         ],
                       ),
-                      const Text(
-                        "Se o solo estiver acima deste valor, agendamentos serão ignorados para economizar água.",
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
+                      const Text("Se o solo estiver acima deste valor, agendamentos serão ignorados.", style: TextStyle(fontSize: 12, color: Colors.grey)),
                       Slider(
                         value: _targetMoisture,
-                        min: 0,
-                        max: 100,
-                        divisions: 100,
+                        min: 0, max: 100, divisions: 100,
                         activeColor: Colors.blue,
                         label: "${_targetMoisture.toInt()}%",
                         onChanged: (val) => setState(() => _targetMoisture = val),
@@ -136,7 +204,6 @@ class _SettingsTabState extends State<SettingsTab> {
 
                       const Divider(height: 30),
 
-                      // --- SLIDER DE DURAÇÃO MANUAL ---
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -144,16 +211,11 @@ class _SettingsTabState extends State<SettingsTab> {
                           Chip(label: Text("${_manualDuration.toInt()} min"), backgroundColor: Colors.orange[100]),
                         ],
                       ),
-                      const Text(
-                        "Duração ao clicar no botão 'Irrigação Manual' na tela inicial.",
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
+                      const Text("Duração ao clicar no botão 'Irrigação Manual'.", style: TextStyle(fontSize: 12, color: Colors.grey)),
                       Slider(
                         value: _manualDuration,
-                        min: 1,
-                        max: 60,
-                        divisions: 59,
-                        activeColor: Colors.orange,
+                        min: 1, max: 60, divisions: 59,
+                        activeColor: Colors.orange, thumbColor: Colors.orange,
                         label: "${_manualDuration.toInt()} min",
                         onChanged: (val) => setState(() => _manualDuration = val),
                       ),
@@ -190,7 +252,6 @@ class _SettingsTabState extends State<SettingsTab> {
                               const DropdownMenuItem(value: -4, child: Text("UTC -04:00 (Amazonas)")),
                               const DropdownMenuItem(value: -5, child: Text("UTC -05:00 (Nova York)")),
                               const DropdownMenuItem(value: 1, child: Text("UTC +01:00 (Berlim)")),
-                              // Você pode adicionar mais fusos conforme a necessidade
                             ],
                             onChanged: (val) {
                               if (val != null) setState(() => _timezoneOffset = val);
@@ -199,31 +260,30 @@ class _SettingsTabState extends State<SettingsTab> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      Text(
-                        "Configurado atualmente: UTC ${_timezoneOffset >= 0 ? '+' : ''}$_timezoneOffset",
-                        style: TextStyle(fontSize: 12, color: Colors.green[700]),
-                      ),
+                      Text("Configurado atualmente: UTC ${_timezoneOffset >= 0 ? '+' : ''}$_timezoneOffset", style: TextStyle(fontSize: 12, color: Colors.green[700])),
                     ],
                   ),
                 ),
               ),
 
               const SizedBox(height: 30),
-
-              // --- BOTÃO SALVAR ---
               SizedBox(
                 height: 50,
                 child: ElevatedButton.icon(
                   onPressed: _isLoading ? null : _saveSettings,
                   icon: const Icon(Icons.save),
-                  label: _isLoading 
-                      ? const CircularProgressIndicator(color: Colors.white) 
-                      : const Text("SALVAR ALTERAÇÕES"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
+                  label: _isLoading ? const CircularProgressIndicator(color: Colors.white) : const Text("SALVAR ALTERAÇÕES"),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                ),
+              ),
+
+              const SizedBox(height: 40),
+              const Divider(color: Colors.redAccent),
+              Center(
+                child: TextButton.icon(
+                  onPressed: _isLoading ? null : _deleteDevice,
+                  icon: const Icon(Icons.delete_forever, color: Colors.red),
+                  label: const Text("Remover este Dispositivo", style: TextStyle(color: Colors.red)),
                 ),
               ),
               const SizedBox(height: 30),
@@ -237,15 +297,7 @@ class _SettingsTabState extends State<SettingsTab> {
   Widget _buildSectionHeader(String title) {
     return Padding(
       padding: const EdgeInsets.only(left: 4, bottom: 8),
-      child: Text(
-        title.toUpperCase(),
-        style: const TextStyle(
-          fontSize: 14, 
-          fontWeight: FontWeight.bold, 
-          color: Colors.grey,
-          letterSpacing: 1.0,
-        ),
-      ),
+      child: Text(title.toUpperCase(), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey, letterSpacing: 1.0)),
     );
   }
 }

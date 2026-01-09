@@ -89,4 +89,14 @@ class DeviceService {
       'settings': newSettings.toMap(),
     });
   }
+  // --- NOVO MÉTODO: Desvincular Dispositivo ---
+  Future<void> unlinkDeviceFromUser(String deviceId) async {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception("Usuário não logado");
+
+    // Remove o ID do array 'my_devices' do usuário
+    await _firestore.collection('users').doc(user.uid).update({
+      'my_devices': FieldValue.arrayRemove([deviceId])
+    });
+  }
 }
