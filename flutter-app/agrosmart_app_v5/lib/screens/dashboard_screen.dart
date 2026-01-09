@@ -22,7 +22,6 @@ import 'login_screen.dart';
 // ⚙️ ÁREA DE CONFIGURAÇÃO DO DASHBOARD
 // ============================================================================
 
-// CORREÇÃO: Nomes em lowerCamelCase conforme padrão Dart
 const int refreshIntervalSeconds = 30;
 const int offlineThresholdMinutes = 12;
 
@@ -51,7 +50,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_telemetryData == null) return false;
     final now = DateTime.now().toUtc();
     final difference = now.difference(_telemetryData!.timestamp);
-    // Usa a constante corrigida
     return difference.inMinutes < offlineThresholdMinutes;
   }
 
@@ -65,7 +63,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _refreshTimer?.cancel();
     _fetchTelemetry(deviceId);
     
-    // Usa a constante corrigida
     _refreshTimer = Timer.periodic(
       const Duration(seconds: refreshIntervalSeconds), 
       (_) => _fetchTelemetry(deviceId)
@@ -383,7 +380,6 @@ class _MonitorTabState extends State<_MonitorTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Usa a constante corrigida
             Text("Atualizando a cada $refreshIntervalSeconds s • Última: ${_formatLastUpdate(data.timestamp)}", textAlign: TextAlign.right, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
             const SizedBox(height: 10),
             _buildSectionTitle("Ambiente & Solo"),
@@ -502,9 +498,14 @@ class _SchedulesTab extends StatelessWidget {
                     children: [
                       Switch(
                         value: schedule.isEnabled,
-                        // CORREÇÃO: Usando activeTrackColor (Flutter novo)
+                        // CORREÇÃO: Usando a forma moderna sem activeColor
                         activeTrackColor: Colors.green, 
-                        activeColor: Colors.white,
+                        thumbColor: MaterialStateProperty.resolveWith((states) {
+                          if (states.contains(MaterialState.selected)) {
+                            return Colors.white;
+                          }
+                          return Colors.grey[200];
+                        }),
                         onChanged: (val) {
                           _service.toggleEnabled(device.id, schedule.id, val).catchError((e) {
                             if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
