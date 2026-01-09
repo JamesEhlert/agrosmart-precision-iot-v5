@@ -22,7 +22,7 @@ import 'login_screen.dart';
 // ⚙️ ÁREA DE CONFIGURAÇÃO DO DASHBOARD
 // ============================================================================
 
-const int refreshIntervalSeconds = 30;
+const int refreshIntervalSeconds = 120;
 const int offlineThresholdMinutes = 12;
 
 // ============================================================================
