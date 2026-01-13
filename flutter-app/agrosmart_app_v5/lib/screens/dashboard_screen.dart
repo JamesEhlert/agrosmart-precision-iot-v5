@@ -3,15 +3,18 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Para paginação
 
 import '../models/device_model.dart';
 import '../models/telemetry_model.dart';
 import '../models/schedule_model.dart';
+import '../models/activity_log_model.dart';
 
 import '../services/aws_service.dart';
 import '../services/schedules_service.dart';
 import '../services/device_service.dart';
 import '../services/auth_service.dart';
+import '../services/history_service.dart'; // Novo serviço
 
 import 'schedule_form_screen.dart';
 import 'settings_tab.dart';
@@ -19,14 +22,14 @@ import 'history_tab.dart';
 import 'login_screen.dart';
 
 // ============================================================================
-// ⚙️ ÁREA DE CONFIGURAÇÃO DO DASHBOARD
+// ⚙️ CONSTANTES
 // ============================================================================
-
-const int refreshIntervalSeconds = 120;
+const int refreshIntervalSeconds = 30;
 const int offlineThresholdMinutes = 12;
 
 // ============================================================================
-
+// MAIN DASHBOARD
+// ============================================================================
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -251,8 +254,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 isLoading: _isLoadingTelemetry,
                 onRefreshRequest: () => _fetchTelemetry(device.id)
               ),
+              // CORREÇÃO: Nova estrutura com abas internas
               _SchedulesTab(device: device),
-              HistoryTab(device: device),
+              HistoryTab(device: device), // A antiga tela, agora só com sensores
               SettingsTab(device: device),
             ];
 
@@ -310,6 +314,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 }
+
+// ... _MonitorTab e _SensorWidget (MANTENHA O CÓDIGO EXISTENTE DELES IGUAL AO ANTERIOR) ...
+// (Para não repetir código já fornecido e que não mudou, vou pular o _MonitorTab.
+// Caso tenha dúvida, o _MonitorTab não sofreu alterações nesta rodada).
 
 class _MonitorTab extends StatefulWidget {
   final DeviceModel device;
@@ -437,11 +445,61 @@ class _MonitorTabState extends State<_MonitorTab> {
   }
 }
 
+// ============================================================================
+// 📅 ABA 2: AGENDAMENTOS E LOGS (Atualizado)
+// ============================================================================
 class _SchedulesTab extends StatelessWidget {
   final DeviceModel device;
   final SchedulesService _service = SchedulesService();
 
   _SchedulesTab({required this.device});
+
+  @override
+  Widget build(BuildContext context) {
+    // Usa um DefaultTabController para gerenciar as duas sub-abas
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          // Barra de Abas (Branca com texto Verde)
+          Container(
+            color: Colors.white,
+            child: const TabBar(
+              labelColor: Colors.green,
+              unselectedLabelColor: Colors.grey,
+              indicatorColor: Colors.green,
+              tabs: [
+                Tab(text: "Agendamentos"),
+                Tab(text: "Eventos (Logs)"),
+              ],
+            ),
+          ),
+          // Conteúdo das Abas
+          Expanded(
+            child: TabBarView(
+              children: [
+                // Aba 1: Lista de Agendamentos (Lógica existente encapsulada)
+                _ScheduleListView(device: device, service: _service),
+                
+                // Aba 2: Logs de Eventos (Nova lógica com paginação)
+                _EventsLogView(device: device),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// WIDGET AUXILIAR: LISTA DE AGENDAMENTOS (Extraído para limpar o código)
+// ============================================================================
+class _ScheduleListView extends StatelessWidget {
+  final DeviceModel device;
+  final SchedulesService service;
+
+  const _ScheduleListView({required this.device, required this.service});
 
   String _formatDays(List<int> days) {
     if (days.length == 7) return "Todos os dias";
@@ -456,13 +514,11 @@ class _SchedulesTab extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.transparent,
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.push(context, MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id)));
-        },
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id))),
         label: const Text("Novo"), icon: const Icon(Icons.add), backgroundColor: Colors.green,
       ),
       body: StreamBuilder<List<ScheduleModel>>(
-        stream: _service.getSchedules(device.id),
+        stream: service.getSchedules(device.id),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
           if (snapshot.hasError) return Center(child: Text("Erro: ${snapshot.error}"));
@@ -487,9 +543,7 @@ class _SchedulesTab extends StatelessWidget {
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 elevation: 2, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 child: ListTile(
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id, scheduleToEdit: schedule)));
-                  },
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => ScheduleFormScreen(deviceId: device.id, scheduleToEdit: schedule))),
                   leading: CircleAvatar(backgroundColor: schedule.isEnabled ? Colors.green[100] : Colors.grey[200], child: Icon(Icons.alarm, color: schedule.isEnabled ? Colors.green : Colors.grey)),
                   title: Text("${schedule.time} - ${schedule.label}", style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: Text("${_formatDays(schedule.days)}\nDuração: ${schedule.durationMinutes} min"),
@@ -498,16 +552,10 @@ class _SchedulesTab extends StatelessWidget {
                     children: [
                       Switch(
                         value: schedule.isEnabled,
-                        // CORREÇÃO: Usando a forma moderna sem activeColor
                         activeTrackColor: Colors.green, 
-                        thumbColor: MaterialStateProperty.resolveWith((states) {
-                          if (states.contains(MaterialState.selected)) {
-                            return Colors.white;
-                          }
-                          return Colors.grey[200];
-                        }),
+                        activeColor: Colors.white,
                         onChanged: (val) {
-                          _service.toggleEnabled(device.id, schedule.id, val).catchError((e) {
+                          service.toggleEnabled(device.id, schedule.id, val).catchError((e) {
                             if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
                           });
                         },
@@ -521,7 +569,7 @@ class _SchedulesTab extends StatelessWidget {
                               title: const Text("Excluir?"),
                               actions: [
                                 TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancelar")),
-                                TextButton(onPressed: () { _service.deleteSchedule(device.id, schedule.id); Navigator.pop(ctx); }, child: const Text("Excluir", style: TextStyle(color: Colors.red)))
+                                TextButton(onPressed: () { service.deleteSchedule(device.id, schedule.id); Navigator.pop(ctx); }, child: const Text("Excluir", style: TextStyle(color: Colors.red)))
                               ],
                             )
                           );
@@ -534,6 +582,155 @@ class _SchedulesTab extends StatelessWidget {
             },
           );
         },
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// WIDGET AUXILIAR: LOG DE EVENTOS (Com Paginação Real)
+// ============================================================================
+class _EventsLogView extends StatefulWidget {
+  final DeviceModel device;
+  const _EventsLogView({required this.device});
+
+  @override
+  State<_EventsLogView> createState() => _EventsLogViewState();
+}
+
+class _EventsLogViewState extends State<_EventsLogView> {
+  final HistoryService _historyService = HistoryService();
+  final List<ActivityLogModel> _logs = [];
+  
+  DocumentSnapshot? _lastDoc; // Marcador para o próximo lote
+  bool _isLoading = true;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFirstPage();
+  }
+
+  Future<void> _loadFirstPage() async {
+    if (!mounted) return;
+    setState(() { _isLoading = true; _logs.clear(); _lastDoc = null; _hasMore = true; });
+    
+    try {
+      final response = await _historyService.getActivityLogs(widget.device.id, limit: 20);
+      
+      if (mounted) {
+        setState(() {
+          _logs.addAll(response.logs);
+          _lastDoc = response.lastDoc;
+          // Se vier menos que o limite, significa que acabou
+          if (response.logs.length < 20) _hasMore = false;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadNextPage() async {
+    if (_isLoadingMore || !_hasMore) return;
+    setState(() => _isLoadingMore = true);
+
+    try {
+      final response = await _historyService.getActivityLogs(
+        widget.device.id, 
+        lastDocument: _lastDoc,
+        limit: 20
+      );
+      
+      if (mounted) {
+        setState(() {
+          _logs.addAll(response.logs);
+          _lastDoc = response.lastDoc;
+          if (response.logs.length < 20) _hasMore = false;
+          _isLoadingMore = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingMore = false);
+    }
+  }
+
+  String _formatDateTime(DateTime time) {
+    return DateFormat('dd/MM/yyyy HH:mm').format(time);
+  }
+
+  Widget _getTypeIcon(String type) {
+    switch (type) {
+      case 'execution': return const Icon(Icons.check_circle, color: Colors.green);
+      case 'skipped': return const Icon(Icons.remove_circle_outline, color: Colors.orange);
+      case 'error': return const Icon(Icons.error, color: Colors.red);
+      default: return const Icon(Icons.info, color: Colors.blue);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.green));
+    
+    if (_logs.isEmpty) {
+      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        const Icon(Icons.event_busy, size: 60, color: Colors.grey),
+        const SizedBox(height: 10), 
+        const Text("Nenhum evento registrado ainda."),
+        TextButton(onPressed: _loadFirstPage, child: const Text("Atualizar"))
+      ]));
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadFirstPage,
+      color: Colors.green,
+      child: ListView.separated(
+        padding: const EdgeInsets.all(12),
+        itemCount: _logs.length + 1, // +1 para o botão Carregar Mais
+        separatorBuilder: (ctx, i) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          if (index == _logs.length) {
+            return _buildLoadMoreButton();
+          }
+
+          final log = _logs[index];
+          return ListTile(
+            leading: _getTypeIcon(log.type),
+            title: Text(log.message, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+            subtitle: Text("${_formatDateTime(log.timestamp)} • Fonte: ${log.source}"),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildLoadMoreButton() {
+    if (!_hasMore) {
+      return const Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Center(child: Text("Fim dos registros.", style: TextStyle(color: Colors.grey))),
+      );
+    }
+    if (_isLoadingMore) {
+      return const Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Center(child: CircularProgressIndicator(strokeWidth: 2, color: Colors.green)),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 32),
+      child: OutlinedButton.icon(
+        onPressed: _loadNextPage,
+        icon: const Icon(Icons.download),
+        label: const Text("CARREGAR MAIS ANTIGOS"),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: Colors.green,
+          side: const BorderSide(color: Colors.green)
+        ),
       ),
     );
   }
