@@ -91,7 +91,7 @@ def lambda_handler(event, context):
         print(f"ERRO CRITICO: {str(e)}")
         return build_response(500, {'error': 'Erro interno no servidor', 'details': str(e)})
 
-# ==============================================================================
+# =============================================================================
 # FUNÇÃO AUXILIAR: RESPOSTA HTTP
 # Constrói o pacote de resposta com cabeçalhos CORS (Cross-Origin Resource Sharing)
 # Isso permite que seu App ou Site acessem essa API sem bloqueio de navegador.
