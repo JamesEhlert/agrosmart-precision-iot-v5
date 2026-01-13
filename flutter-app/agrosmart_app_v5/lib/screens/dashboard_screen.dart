@@ -14,7 +14,7 @@ import '../services/aws_service.dart';
 import '../services/schedules_service.dart';
 import '../services/device_service.dart';
 import '../services/auth_service.dart';
-import '../services/history_service.dart'; // Novo serviço
+import '../services/history_service.dart';
 
 import 'schedule_form_screen.dart';
 import 'settings_tab.dart';
@@ -62,15 +62,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  void _startTelemetryUpdates(String deviceId) {
-    _refreshTimer?.cancel();
-    _fetchTelemetry(deviceId);
-    
-    _refreshTimer = Timer.periodic(
-      const Duration(seconds: refreshIntervalSeconds), 
-      (_) => _fetchTelemetry(deviceId)
-    );
+  // --- LÓGICA DO TIMER INTELIGENTE ---
+  void _manageTimer() {
+    _refreshTimer?.cancel(); 
+
+    // Só inicia o timer se tiver um dispositivo e estiver na aba MONITOR (0)
+    if (_selectedDeviceId != null && _currentIndex == 0) {
+      _fetchTelemetry(_selectedDeviceId!);
+      _refreshTimer = Timer.periodic(
+        const Duration(seconds: refreshIntervalSeconds), 
+        (_) => _fetchTelemetry(_selectedDeviceId!)
+      );
+    }
   }
+
+  void _onTabTapped(int index) {
+    setState(() {
+      _currentIndex = index;
+    });
+    _manageTimer(); // Recalcula se o timer deve rodar
+  }
+  // ------------------------------------
 
   Future<void> _fetchTelemetry(String deviceId) async {
     try {
@@ -109,8 +121,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     _telemetryData = null;
                     _isLoadingTelemetry = true;
                   });
-                  _startTelemetryUpdates(deviceId);
                   Navigator.pop(ctx);
+                  _manageTimer(); // Reinicia lógica ao trocar device
                 },
               )),
 
@@ -161,7 +173,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                      _selectedDeviceId = newId;
                      _isLoadingTelemetry = true;
                    });
-                   _startTelemetryUpdates(newId);
+                   _manageTimer();
                 }
               } catch (e) {
                 if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
@@ -230,7 +242,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _selectedDeviceId = userDevices.first;
                 _isLoadingTelemetry = true;
               });
-              _startTelemetryUpdates(userDevices.first);
+              _manageTimer();
             }
           });
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -254,9 +266,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 isLoading: _isLoadingTelemetry,
                 onRefreshRequest: () => _fetchTelemetry(device.id)
               ),
-              // CORREÇÃO: Nova estrutura com abas internas
+              // CORREÇÃO: Restaurada a aba que contém Agendamentos + Eventos
               _SchedulesTab(device: device),
-              HistoryTab(device: device), // A antiga tela, agora só com sensores
+              HistoryTab(device: device),
               SettingsTab(device: device),
             ];
 
@@ -296,9 +308,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ],
               ),
+              
               body: pages[_currentIndex],
+
               bottomNavigationBar: BottomNavigationBar(
-                currentIndex: _currentIndex, onTap: (index) => setState(() => _currentIndex = index),
+                currentIndex: _currentIndex,
+                onTap: _onTabTapped, // Usa a lógica do Timer Inteligente
                 type: BottomNavigationBarType.fixed, selectedItemColor: Colors.green, unselectedItemColor: Colors.grey, showUnselectedLabels: true,
                 items: const [
                   BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: "Monitor"),
@@ -315,10 +330,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// ... _MonitorTab e _SensorWidget (MANTENHA O CÓDIGO EXISTENTE DELES IGUAL AO ANTERIOR) ...
-// (Para não repetir código já fornecido e que não mudou, vou pular o _MonitorTab.
-// Caso tenha dúvida, o _MonitorTab não sofreu alterações nesta rodada).
-
+// ============================================================================
+// 📊 ABA 1: MONITORAMENTO (Sem alterações, apenas incluso para compilar)
+// ============================================================================
 class _MonitorTab extends StatefulWidget {
   final DeviceModel device;
   final TelemetryModel? telemetryData;
@@ -446,7 +460,7 @@ class _MonitorTabState extends State<_MonitorTab> {
 }
 
 // ============================================================================
-// 📅 ABA 2: AGENDAMENTOS E LOGS (Atualizado)
+// 📅 ABA 2: AGENDAMENTOS E LOGS (RESTAURADA AQUI)
 // ============================================================================
 class _SchedulesTab extends StatelessWidget {
   final DeviceModel device;
@@ -461,7 +475,7 @@ class _SchedulesTab extends StatelessWidget {
       length: 2,
       child: Column(
         children: [
-          // Barra de Abas (Branca com texto Verde)
+          // Barra de Abas
           Container(
             color: Colors.white,
             child: const TabBar(
@@ -474,14 +488,14 @@ class _SchedulesTab extends StatelessWidget {
               ],
             ),
           ),
-          // Conteúdo das Abas
+          // Conteúdo
           Expanded(
             child: TabBarView(
               children: [
-                // Aba 1: Lista de Agendamentos (Lógica existente encapsulada)
+                // Aba 1: Lista de Agendamentos (Lógica separada)
                 _ScheduleListView(device: device, service: _service),
                 
-                // Aba 2: Logs de Eventos (Nova lógica com paginação)
+                // Aba 2: Logs de Eventos (Lógica separada)
                 _EventsLogView(device: device),
               ],
             ),
@@ -493,7 +507,7 @@ class _SchedulesTab extends StatelessWidget {
 }
 
 // ============================================================================
-// WIDGET AUXILIAR: LISTA DE AGENDAMENTOS (Extraído para limpar o código)
+// WIDGET AUXILIAR: LISTA DE AGENDAMENTOS
 // ============================================================================
 class _ScheduleListView extends StatelessWidget {
   final DeviceModel device;
@@ -553,7 +567,10 @@ class _ScheduleListView extends StatelessWidget {
                       Switch(
                         value: schedule.isEnabled,
                         activeTrackColor: Colors.green, 
-                        activeColor: Colors.white,
+                        thumbColor: MaterialStateProperty.resolveWith((states) {
+                          if (states.contains(MaterialState.selected)) return Colors.white;
+                          return Colors.grey[200];
+                        }),
                         onChanged: (val) {
                           service.toggleEnabled(device.id, schedule.id, val).catchError((e) {
                             if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
@@ -588,7 +605,7 @@ class _ScheduleListView extends StatelessWidget {
 }
 
 // ============================================================================
-// WIDGET AUXILIAR: LOG DE EVENTOS (Com Paginação Real)
+// WIDGET AUXILIAR: LOG DE EVENTOS (PAGINADO)
 // ============================================================================
 class _EventsLogView extends StatefulWidget {
   final DeviceModel device;
@@ -624,7 +641,6 @@ class _EventsLogViewState extends State<_EventsLogView> {
         setState(() {
           _logs.addAll(response.logs);
           _lastDoc = response.lastDoc;
-          // Se vier menos que o limite, significa que acabou
           if (response.logs.length < 20) _hasMore = false;
           _isLoading = false;
         });
@@ -689,7 +705,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
       color: Colors.green,
       child: ListView.separated(
         padding: const EdgeInsets.all(12),
-        itemCount: _logs.length + 1, // +1 para o botão Carregar Mais
+        itemCount: _logs.length + 1,
         separatorBuilder: (ctx, i) => const Divider(height: 1),
         itemBuilder: (context, index) {
           if (index == _logs.length) {
@@ -738,9 +754,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
 
 class _SensorWidget extends StatelessWidget {
   final IconData icon; final String value; final String label; final Color color;
-  
   const _SensorWidget({required this.icon, required this.value, required this.label, required this.color});
-
   @override
   Widget build(BuildContext context) {
     return Column(children: [
