@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+// CORREÇÃO: Import necessário para inicializar o formato de data em Português
+import 'package:intl/date_symbol_data_local.dart'; 
 import '../models/device_model.dart';
 
 class WeatherScreen extends StatefulWidget {
@@ -32,14 +34,20 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
     // Se não tiver GPS, mostra erro amigável
     if (lat == 0 && lon == 0) {
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+        });
+      }
       return;
     }
 
     try {
+      // CORREÇÃO: Inicializa os dados de formatação PT-BR antes de usar
+      // Isso evita o erro "LocaleDataException"
+      await initializeDateFormatting('pt_BR', null);
+
       // API Open-Meteo (Gratuita, sem chave)
       final url = Uri.parse(
           "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto");
@@ -49,10 +57,12 @@ class _WeatherScreenState extends State<WeatherScreen> {
       final response = await http.get(url);
 
       if (response.statusCode == 200) {
-        setState(() {
-          _weatherData = json.decode(response.body);
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _weatherData = json.decode(response.body);
+            _isLoading = false;
+          });
+        }
       } else {
         throw Exception("Erro API: ${response.statusCode}");
       }
@@ -95,7 +105,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
   String _formatDay(String dateStr) {
     final date = DateTime.parse(dateStr);
-    return DateFormat('EEEE, dd/MM', 'pt_BR').format(date); // Requer 'intl' configurado ou padrão
+    // Agora isso vai funcionar porque chamamos initializeDateFormatting antes
+    return DateFormat('EEEE, dd/MM', 'pt_BR').format(date); 
   }
 
   @override
@@ -185,7 +196,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 child: ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: (info['color'] as Color).withAlpha(30), // Correção para versão nova do Flutter
+                    backgroundColor: (info['color'] as Color).withAlpha(30), 
                     child: Icon(info['icon'], color: info['color']),
                   ),
                   title: Text(_formatDay(date), style: const TextStyle(fontWeight: FontWeight.bold)),
