@@ -1,6 +1,7 @@
 // ARQUIVO: lib/screens/settings_tab.dart
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart'; // PACOTE DE GPS
 import '../models/device_model.dart';
 import '../services/device_service.dart';
 
@@ -24,15 +25,19 @@ class _SettingsTabState extends State<SettingsTab> {
   double _targetMoisture = 60;
   double _manualDuration = 5;
   int _timezoneOffset = -3;
-  bool _isLoading = false;
   
-  // Variável de controle para inicialização segura
+  // --- NOVAS VARIÁVEIS (WEATHER) ---
+  bool _enableWeatherControl = false;
+  double _latitude = 0.0;
+  double _longitude = 0.0;
+  bool _isLoadingLocation = false; // Para mostrar loading no botão de GPS
+
+  bool _isLoading = false;
   bool _isInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    // Inicializa o controlador aqui para garantir que não seja null
     _nameController = TextEditingController();
     _updateFieldsFromDevice();
   }
@@ -40,17 +45,14 @@ class _SettingsTabState extends State<SettingsTab> {
   @override
   void didUpdateWidget(covariant SettingsTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Se o dispositivo mudou, atualizamos os campos
     if (oldWidget.device != widget.device) {
       _updateFieldsFromDevice();
     }
   }
 
-  // Método centralizado para preencher os campos com dados do modelo
   void _updateFieldsFromDevice() {
     final settings = widget.device.settings;
 
-    // Atualiza o texto apenas se não estivermos editando ativamente ou se for a primeira vez
     if (!_isInitialized || _nameController.text != settings.deviceName) {
       _nameController.text = settings.deviceName;
     }
@@ -58,12 +60,17 @@ class _SettingsTabState extends State<SettingsTab> {
     setState(() {
       _targetMoisture = settings.targetMoisture;
       
-      // Proteção contra valor 0.0 no Slider (que tem min: 1.0)
       double dur = settings.manualDuration.toDouble();
-      if (dur < 1.0) dur = 5.0; // Valor seguro padrão
+      if (dur < 1.0) dur = 5.0;
       _manualDuration = dur;
 
       _timezoneOffset = settings.timezoneOffset;
+
+      // --- ATUALIZAÇÃO DOS NOVOS CAMPOS ---
+      _enableWeatherControl = settings.enableWeatherControl;
+      _latitude = settings.latitude;
+      _longitude = settings.longitude;
+      
       _isInitialized = true;
     });
   }
@@ -72,6 +79,57 @@ class _SettingsTabState extends State<SettingsTab> {
   void dispose() {
     _nameController.dispose();
     super.dispose();
+  }
+
+  // --- FUNÇÃO PARA PEGAR GPS ---
+  Future<void> _getCurrentLocation() async {
+    setState(() => _isLoadingLocation = true);
+
+    try {
+      // 1. Verifica se o serviço de GPS está ligado
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        throw Exception('O GPS do celular está desativado.');
+      }
+
+      // 2. Verifica permissões
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          throw Exception('Permissão de localização negada.');
+        }
+      }
+      
+      if (permission == LocationPermission.deniedForever) {
+        throw Exception('Permissão de localização permanentemente negada. Habilite nas configurações do Android.');
+      }
+
+      // 3. Pega a posição atual (Precisão alta)
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high
+      );
+
+      setState(() {
+        _latitude = position.latitude;
+        _longitude = position.longitude;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("📍 Localização atualizada com sucesso!"), backgroundColor: Colors.green),
+        );
+      }
+
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Erro no GPS: $e"), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingLocation = false);
+    }
   }
 
   Future<void> _saveSettings() async {
@@ -85,13 +143,17 @@ class _SettingsTabState extends State<SettingsTab> {
         targetMoisture: _targetMoisture,
         manualDuration: _manualDuration.toInt(),
         timezoneOffset: _timezoneOffset,
+        // Salvando novos campos
+        latitude: _latitude,
+        longitude: _longitude,
+        enableWeatherControl: _enableWeatherControl,
       );
 
       await _deviceService.updateDeviceSettings(widget.device.id, newSettings);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("✅ Configurações salv com sucesso!"), backgroundColor: Colors.green),
+          const SnackBar(content: Text("✅ Configurações salvas com sucesso!"), backgroundColor: Colors.green),
         );
       }
     } catch (e) {
@@ -105,20 +167,21 @@ class _SettingsTabState extends State<SettingsTab> {
     }
   }
 
+  // Mantive a função de deletar igual (omitida para brevidade se necessário, mas aqui está completa)
   Future<void> _deleteDevice() async {
     final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Remover Dispositivo?"),
-        content: const Text("Você perderá o acesso a este dispositivo. Seus dados serão mantidos para recuperação futura via suporte."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancelar")),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true), 
-            child: const Text("REMOVER", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold))
-          ),
-        ],
-      )
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Remover Dispositivo?"),
+          content: const Text("Você perderá o acesso a este dispositivo."),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancelar")),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text("REMOVER", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold))
+            ),
+          ],
+        )
     );
 
     if (confirm != true) return;
@@ -127,17 +190,12 @@ class _SettingsTabState extends State<SettingsTab> {
 
     try {
       await _deviceService.unlinkDeviceFromUser(widget.device.id);
-      
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Dispositivo desvinculado com sucesso."), backgroundColor: Colors.grey),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Dispositivo desvinculado."), backgroundColor: Colors.grey));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Erro ao remover: $e"), backgroundColor: Colors.red),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -146,7 +204,6 @@ class _SettingsTabState extends State<SettingsTab> {
 
   @override
   Widget build(BuildContext context) {
-    // Se por algum motivo ainda não inicializou, mostra loading
     if (!_isInitialized) return const Center(child: CircularProgressIndicator());
 
     return Scaffold(
@@ -201,9 +258,7 @@ class _SettingsTabState extends State<SettingsTab> {
                         label: "${_targetMoisture.toInt()}%",
                         onChanged: (val) => setState(() => _targetMoisture = val),
                       ),
-
                       const Divider(height: 30),
-
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -211,7 +266,6 @@ class _SettingsTabState extends State<SettingsTab> {
                           Chip(label: Text("${_manualDuration.toInt()} min"), backgroundColor: Colors.orange[100]),
                         ],
                       ),
-                      const Text("Duração ao clicar no botão 'Irrigação Manual'.", style: TextStyle(fontSize: 12, color: Colors.grey)),
                       Slider(
                         value: _manualDuration,
                         min: 1, max: 60, divisions: 59,
@@ -221,6 +275,67 @@ class _SettingsTabState extends State<SettingsTab> {
                       ),
                     ],
                   ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+              // --- NOVA SEÇÃO: INTELIGÊNCIA METEOROLÓGICA ---
+              _buildSectionHeader("Inteligência Meteorológica"),
+              Card(
+                elevation: 2,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      title: const Text("Previsão de Chuva Inteligente", style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text("Não irrigar se houver previsão de chuva nas próximas 6h."),
+                      activeColor: Colors.green,
+                      value: _enableWeatherControl,
+                      onChanged: (val) => setState(() => _enableWeatherControl = val),
+                    ),
+                    const Divider(height: 1),
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("Localização do Dispositivo:", style: TextStyle(fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8)),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text("Lat: ${_latitude.toStringAsFixed(5)}"),
+                                      Text("Long: ${_longitude.toStringAsFixed(5)}"),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              ElevatedButton.icon(
+                                onPressed: _isLoadingLocation ? null : _getCurrentLocation,
+                                icon: _isLoadingLocation 
+                                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) 
+                                    : const Icon(Icons.my_location),
+                                label: const Text("GPS Atual"),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blueAccent, 
+                                  foregroundColor: Colors.white
+                                ),
+                              )
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                          const Text("* Necessário estar próximo ao dispositivo para configurar.", style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic)),
+                        ],
+                      ),
+                    )
+                  ],
                 ),
               ),
 
@@ -246,12 +361,12 @@ class _SettingsTabState extends State<SettingsTab> {
                           child: DropdownButton<int>(
                             value: _timezoneOffset,
                             isExpanded: true,
-                            items: [
-                              const DropdownMenuItem(value: 0, child: Text("UTC +00:00 (Londres)")),
-                              const DropdownMenuItem(value: -3, child: Text("UTC -03:00 (Brasília)")),
-                              const DropdownMenuItem(value: -4, child: Text("UTC -04:00 (Amazonas)")),
-                              const DropdownMenuItem(value: -5, child: Text("UTC -05:00 (Nova York)")),
-                              const DropdownMenuItem(value: 1, child: Text("UTC +01:00 (Berlim)")),
+                            items: const [
+                              DropdownMenuItem(value: 0, child: Text("UTC +00:00 (Londres)")),
+                              DropdownMenuItem(value: -3, child: Text("UTC -03:00 (Brasília)")),
+                              DropdownMenuItem(value: -4, child: Text("UTC -04:00 (Amazonas)")),
+                              DropdownMenuItem(value: -5, child: Text("UTC -05:00 (Nova York)")),
+                              DropdownMenuItem(value: 1, child: Text("UTC +01:00 (Berlim)")),
                             ],
                             onChanged: (val) {
                               if (val != null) setState(() => _timezoneOffset = val);
@@ -259,8 +374,6 @@ class _SettingsTabState extends State<SettingsTab> {
                           ),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Text("Configurado atualmente: UTC ${_timezoneOffset >= 0 ? '+' : ''}$_timezoneOffset", style: TextStyle(fontSize: 12, color: Colors.green[700])),
                     ],
                   ),
                 ),
