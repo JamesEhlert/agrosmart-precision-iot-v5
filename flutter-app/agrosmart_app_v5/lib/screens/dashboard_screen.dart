@@ -3,7 +3,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // Para paginação
+import 'package:cloud_firestore/cloud_firestore.dart'; 
 
 import '../models/device_model.dart';
 import '../models/telemetry_model.dart';
@@ -20,6 +20,7 @@ import 'schedule_form_screen.dart';
 import 'settings_tab.dart';
 import 'history_tab.dart';
 import 'login_screen.dart';
+import 'weather_screen.dart'; // <--- IMPORTANTE: Nova tela importada
 
 // ============================================================================
 // ⚙️ CONSTANTES
@@ -41,11 +42,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final DeviceService _deviceService = DeviceService();
   final AuthService _authService = AuthService();
   final AwsService _awsService = AwsService();
-  
   String? _selectedDeviceId;
-  int _currentIndex = 0;     
-  
-  TelemetryModel? _telemetryData; 
+  int _currentIndex = 0;
+  TelemetryModel? _telemetryData;
   bool _isLoadingTelemetry = true;
   Timer? _refreshTimer;
 
@@ -62,15 +61,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  // --- LÓGICA DO TIMER INTELIGENTE ---
   void _manageTimer() {
-    _refreshTimer?.cancel(); 
-
-    // Só inicia o timer se tiver um dispositivo e estiver na aba MONITOR (0)
+    _refreshTimer?.cancel();
     if (_selectedDeviceId != null && _currentIndex == 0) {
       _fetchTelemetry(_selectedDeviceId!);
       _refreshTimer = Timer.periodic(
-        const Duration(seconds: refreshIntervalSeconds), 
+        const Duration(seconds: refreshIntervalSeconds),
         (_) => _fetchTelemetry(_selectedDeviceId!)
       );
     }
@@ -80,9 +76,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _currentIndex = index;
     });
-    _manageTimer(); // Recalcula se o timer deve rodar
+    _manageTimer(); 
   }
-  // ------------------------------------
 
   Future<void> _fetchTelemetry(String deviceId) async {
     try {
@@ -102,7 +97,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) { 
+      builder: (ctx) {
         return Container(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -110,7 +105,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               const Text("Meus Dispositivos", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 10),
-              
+
               ...userDevices.map((deviceId) => ListTile(
                 leading: Icon(Icons.router, color: deviceId == _selectedDeviceId ? Colors.green : Colors.grey),
                 title: Text(deviceId, style: TextStyle(fontWeight: deviceId == _selectedDeviceId ? FontWeight.bold : FontWeight.normal)),
@@ -122,7 +117,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     _isLoadingTelemetry = true;
                   });
                   Navigator.pop(ctx);
-                  _manageTimer(); // Reinicia lógica ao trocar device
+                  _manageTimer();
                 },
               )),
 
@@ -133,7 +128,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 onTap: () {
                   Navigator.pop(ctx);
                   Future.delayed(const Duration(milliseconds: 200), () {
-                     if (mounted) _showAddDeviceDialog();
+                    if (mounted) _showAddDeviceDialog();
                   });
                 },
               ),
@@ -168,12 +163,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 await _deviceService.linkDeviceToUser(idController.text.trim(), nameController.text.trim());
                 if (ctx.mounted) Navigator.pop(ctx);
                 if (_selectedDeviceId == null && mounted) {
-                   final newId = idController.text.trim();
-                   setState(() {
-                     _selectedDeviceId = newId;
-                     _isLoadingTelemetry = true;
-                   });
-                   _manageTimer();
+                  final newId = idController.text.trim();
+                  setState(() {
+                    _selectedDeviceId = newId;
+                    _isLoadingTelemetry = true;
+                  });
+                  _manageTimer();
                 }
               } catch (e) {
                 if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
@@ -207,7 +202,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               title: const Text("AgroSmart V5"),
               backgroundColor: Colors.green, foregroundColor: Colors.white,
               actions: [
-                 PopupMenuButton<String>(
+                PopupMenuButton<String>(
                   onSelected: (value) { if (value == 'logout') _handleLogout(); },
                   itemBuilder: (context) => [
                     const PopupMenuItem(value: 'logout', child: Row(children: [Icon(Icons.logout, color: Colors.red), SizedBox(width: 8), Text("Sair da Conta")])),
@@ -251,9 +246,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return StreamBuilder<DeviceModel>(
           stream: _deviceService.getDeviceStream(_selectedDeviceId!),
           builder: (context, snapshotDevice) {
-            
+
             final device = snapshotDevice.data ?? DeviceModel(
-              id: _selectedDeviceId!, isOnline: false, 
+              id: _selectedDeviceId!, isOnline: false,
               settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: "Carregando...", timezoneOffset: -3)
             );
 
@@ -261,12 +256,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             final List<Widget> pages = [
               _MonitorTab(
-                device: device, 
-                telemetryData: _telemetryData, 
+                device: device,
+                telemetryData: _telemetryData,
                 isLoading: _isLoadingTelemetry,
                 onRefreshRequest: () => _fetchTelemetry(device.id)
               ),
-              // CORREÇÃO: Restaurada a aba que contém Agendamentos + Eventos
               _SchedulesTab(device: device),
               HistoryTab(device: device),
               SettingsTab(device: device),
@@ -308,12 +302,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ],
               ),
-              
               body: pages[_currentIndex],
-
               bottomNavigationBar: BottomNavigationBar(
                 currentIndex: _currentIndex,
-                onTap: _onTabTapped, // Usa a lógica do Timer Inteligente
+                onTap: _onTabTapped,
                 type: BottomNavigationBarType.fixed, selectedItemColor: Colors.green, unselectedItemColor: Colors.grey, showUnselectedLabels: true,
                 items: const [
                   BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: "Monitor"),
@@ -331,7 +323,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 // ============================================================================
-// 📊 ABA 1: MONITORAMENTO (Sem alterações, apenas incluso para compilar)
+// 📊 ABA 1: MONITORAMENTO
 // ============================================================================
 class _MonitorTab extends StatefulWidget {
   final DeviceModel device;
@@ -393,6 +385,9 @@ class _MonitorTabState extends State<_MonitorTab> {
       );
     }
 
+    // --- VERIFICA SE TEM GPS PARA MOSTRAR CARD DE TEMPO ---
+    final bool hasGps = widget.device.settings.latitude != 0 && widget.device.settings.longitude != 0;
+
     return RefreshIndicator(
       onRefresh: () async => widget.onRefreshRequest(),
       color: Colors.green,
@@ -404,6 +399,43 @@ class _MonitorTabState extends State<_MonitorTab> {
           children: [
             Text("Atualizando a cada $refreshIntervalSeconds s • Última: ${_formatLastUpdate(data.timestamp)}", textAlign: TextAlign.right, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
             const SizedBox(height: 10),
+
+            // --- NOVO CARD DE CLIMA (OPCIONAL) ---
+            if (hasGps)
+              Card(
+                color: Colors.blueAccent,
+                elevation: 4,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: InkWell(
+                  onTap: () {
+                     // Navega para a tela de previsão
+                     Navigator.push(context, MaterialPageRoute(builder: (context) => WeatherScreen(device: widget.device)));
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Icon(Icons.cloud_queue, color: Colors.white, size: 30),
+                        SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text("Previsão do Tempo", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                              Text("Toque para ver os próximos 7 dias", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.arrow_forward_ios, color: Colors.white70, size: 16)
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            
+            if (hasGps) const SizedBox(height: 16),
+
             _buildSectionTitle("Ambiente & Solo"),
             Card(
               elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -437,13 +469,13 @@ class _MonitorTabState extends State<_MonitorTab> {
                 onPressed: _isSendingCommand ? null : _sendManualIrrigation,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue, foregroundColor: Colors.white,
-                  disabledBackgroundColor: Colors.blue.withValues(alpha: 0.6),
+                  disabledBackgroundColor: Colors.blue.withAlpha(150), // Ajuste Flutter 3
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))
                 ),
                 child: _isSendingCommand
                   ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                   : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      const Icon(Icons.water), const SizedBox(width: 8), 
+                      const Icon(Icons.water), const SizedBox(width: 8),
                       Text("IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration} min)")
                     ]),
               ),
@@ -460,7 +492,7 @@ class _MonitorTabState extends State<_MonitorTab> {
 }
 
 // ============================================================================
-// 📅 ABA 2: AGENDAMENTOS E LOGS (RESTAURADA AQUI)
+// 📅 ABA 2: AGENDAMENTOS E LOGS
 // ============================================================================
 class _SchedulesTab extends StatelessWidget {
   final DeviceModel device;
@@ -470,12 +502,10 @@ class _SchedulesTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Usa um DefaultTabController para gerenciar as duas sub-abas
     return DefaultTabController(
       length: 2,
       child: Column(
         children: [
-          // Barra de Abas
           Container(
             color: Colors.white,
             child: const TabBar(
@@ -488,14 +518,10 @@ class _SchedulesTab extends StatelessWidget {
               ],
             ),
           ),
-          // Conteúdo
           Expanded(
             child: TabBarView(
               children: [
-                // Aba 1: Lista de Agendamentos (Lógica separada)
                 _ScheduleListView(device: device, service: _service),
-                
-                // Aba 2: Logs de Eventos (Lógica separada)
                 _EventsLogView(device: device),
               ],
             ),
@@ -566,7 +592,7 @@ class _ScheduleListView extends StatelessWidget {
                     children: [
                       Switch(
                         value: schedule.isEnabled,
-                        activeTrackColor: Colors.green, 
+                        activeTrackColor: Colors.green,
                         thumbColor: MaterialStateProperty.resolveWith((states) {
                           if (states.contains(MaterialState.selected)) return Colors.white;
                           return Colors.grey[200];
@@ -618,8 +644,7 @@ class _EventsLogView extends StatefulWidget {
 class _EventsLogViewState extends State<_EventsLogView> {
   final HistoryService _historyService = HistoryService();
   final List<ActivityLogModel> _logs = [];
-  
-  DocumentSnapshot? _lastDoc; // Marcador para o próximo lote
+  DocumentSnapshot? _lastDoc; 
   bool _isLoading = true;
   bool _isLoadingMore = false;
   bool _hasMore = true;
@@ -633,10 +658,10 @@ class _EventsLogViewState extends State<_EventsLogView> {
   Future<void> _loadFirstPage() async {
     if (!mounted) return;
     setState(() { _isLoading = true; _logs.clear(); _lastDoc = null; _hasMore = true; });
-    
+
     try {
       final response = await _historyService.getActivityLogs(widget.device.id, limit: 20);
-      
+
       if (mounted) {
         setState(() {
           _logs.addAll(response.logs);
@@ -656,11 +681,11 @@ class _EventsLogViewState extends State<_EventsLogView> {
 
     try {
       final response = await _historyService.getActivityLogs(
-        widget.device.id, 
+        widget.device.id,
         lastDocument: _lastDoc,
         limit: 20
       );
-      
+
       if (mounted) {
         setState(() {
           _logs.addAll(response.logs);
@@ -690,11 +715,11 @@ class _EventsLogViewState extends State<_EventsLogView> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.green));
-    
+
     if (_logs.isEmpty) {
       return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         const Icon(Icons.event_busy, size: 60, color: Colors.grey),
-        const SizedBox(height: 10), 
+        const SizedBox(height: 10),
         const Text("Nenhum evento registrado ainda."),
         TextButton(onPressed: _loadFirstPage, child: const Text("Atualizar"))
       ]));
@@ -758,10 +783,10 @@ class _SensorWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Column(children: [
-        Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: color.withValues(alpha: 0.15), shape: BoxShape.circle), child: Icon(icon, color: color, size: 28)),
-        const SizedBox(height: 8),
-        Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: color.withAlpha(38), shape: BoxShape.circle), child: Icon(icon, color: color, size: 28)),
+      const SizedBox(height: 8),
+      Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
     ]);
   }
 }
