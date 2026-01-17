@@ -31,7 +31,7 @@ const int refreshIntervalSeconds = 30;
 const int offlineThresholdMinutes = 12;
 
 // ============================================================================
-// MAIN DASHBOARD (Sem alterações lógicas profundas, apenas imports e estrutura)
+// MAIN DASHBOARD
 // ============================================================================
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -282,7 +282,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 // ============================================================================
-// 📊 ABA 1: MONITORAMENTO (AGORA COM CARD DE CLIMA REAL)
+// 📊 ABA 1: MONITORAMENTO (COM CARD MELHORADO E CORREÇÃO DE LOAD)
 // ============================================================================
 class _MonitorTab extends StatefulWidget {
   final DeviceModel device;
@@ -313,22 +313,28 @@ class _MonitorTabState extends State<_MonitorTab> {
   @override
   void didUpdateWidget(covariant _MonitorTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.device.id != widget.device.id) {
+    // Atualiza se mudar o dispositivo ou se as coordenadas mudarem (GPS carregou)
+    if (oldWidget.device.id != widget.device.id ||
+        oldWidget.device.settings.latitude != widget.device.settings.latitude) {
       _fetchWeatherSummary();
     }
   }
 
-  // Busca resumo do tempo apenas para o Card
+  // Busca resumo do tempo
   Future<void> _fetchWeatherSummary() async {
     final lat = widget.device.settings.latitude;
     final lon = widget.device.settings.longitude;
 
+    // Se não tem GPS, não faz nada
     if (lat == 0 && lon == 0) return;
 
-    setState(() => _loadingWeather = true);
+    if (mounted) setState(() => _loadingWeather = true);
+    
     try {
       final url = Uri.parse("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto");
+      
       final response = await http.get(url);
+      
       if (response.statusCode == 200) {
         if (mounted) setState(() => _weatherSummary = json.decode(response.body));
       }
@@ -339,17 +345,16 @@ class _MonitorTabState extends State<_MonitorTab> {
     }
   }
 
-  // Helper de ícones de clima (mesma lógica da WeatherScreen)
   Map<String, dynamic> _getWeatherInfo(int code) {
     switch (code) {
-      case 0: return {'label': 'Céu Limpo', 'icon': Icons.wb_sunny, 'color': Colors.orangeAccent};
+      case 0: return {'label': 'Limpo', 'icon': Icons.wb_sunny, 'color': Colors.orangeAccent};
       case 1: case 2: case 3: return {'label': 'Nublado', 'icon': Icons.cloud, 'color': Colors.white70};
       case 45: case 48: return {'label': 'Nevoeiro', 'icon': Icons.foggy, 'color': Colors.blueGrey};
       case 51: case 53: case 55: return {'label': 'Garoa', 'icon': Icons.grain, 'color': Colors.lightBlueAccent};
-      case 61: case 63: case 65: return {'label': 'Chuva', 'icon': Icons.water_drop, 'color': Colors.blueAccent};
-      case 80: case 81: case 82: return {'label': 'Chuva Forte', 'icon': Icons.tsunami, 'color': Colors.indigo};
-      case 95: case 96: case 99: return {'label': 'Tempestade', 'icon': Icons.flash_on, 'color': Colors.deepOrange};
-      default: return {'label': 'Desconhecido', 'icon': Icons.help_outline, 'color': Colors.grey};
+      case 61: case 63: case 65: return {'label': 'Chuva', 'icon': Icons.water_drop, 'color': Colors.lightBlue};
+      case 80: case 81: case 82: return {'label': 'Chuva Forte', 'icon': Icons.tsunami, 'color': Colors.indigoAccent};
+      case 95: case 96: case 99: return {'label': 'Tempestade', 'icon': Icons.flash_on, 'color': Colors.deepOrangeAccent};
+      default: return {'label': '--', 'icon': Icons.help_outline, 'color': Colors.grey};
     }
   }
 
@@ -380,7 +385,7 @@ class _MonitorTabState extends State<_MonitorTab> {
     return RefreshIndicator(
       onRefresh: () async {
         widget.onRefreshRequest();
-        _fetchWeatherSummary(); // Atualiza também o clima ao puxar
+        _fetchWeatherSummary(); // Atualiza o clima também
       },
       color: Colors.green,
       child: SingleChildScrollView(
@@ -402,37 +407,68 @@ class _MonitorTabState extends State<_MonitorTab> {
                 child: InkWell(
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => WeatherScreen(device: widget.device))),
                   borderRadius: BorderRadius.circular(16),
-                  child: Padding(
+                  child: Container(
+                    height: 110,
                     padding: const EdgeInsets.all(16),
                     child: _loadingWeather 
                       ? const Center(child: CircularProgressIndicator(color: Colors.white))
                       : _weatherSummary == null 
-                        ? const Center(child: Text("Toque para ver previsão", style: TextStyle(color: Colors.white)))
+                        ? const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.touch_app, color: Colors.white70),
+                              SizedBox(width: 8),
+                              Text("Toque para ver previsão", style: TextStyle(color: Colors.white)),
+                            ],
+                          )
                         : Row(
                             children: [
-                              // Ícone Grande
-                              Icon(_getWeatherInfo(_weatherSummary!['current']['weather_code'])['icon'], color: Colors.white, size: 50),
-                              const SizedBox(width: 16),
-                              // Info Principal
+                              // 1. Ícone Grande e Condição
+                              Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(_getWeatherInfo(_weatherSummary!['current']['weather_code'])['icon'], color: Colors.white, size: 36),
+                                  const SizedBox(height: 4),
+                                  Text(_getWeatherInfo(_weatherSummary!['current']['weather_code'])['label'], style: const TextStyle(color: Colors.white, fontSize: 12)),
+                                ],
+                              ),
+                              const SizedBox(width: 20),
+                              
+                              // 2. Temperatura Principal
+                              Text(
+                                "${_weatherSummary!['current']['temperature_2m'].toInt()}°",
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 42),
+                              ),
+                              const SizedBox(width: 20),
+
+                              // 3. Detalhes (Máx, Mín, Chuva)
                               Expanded(
                                 child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(_getWeatherInfo(_weatherSummary!['current']['weather_code'])['label'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
-                                    Text("Agora: ${_weatherSummary!['current']['temperature_2m']}°C", style: const TextStyle(color: Colors.white, fontSize: 14)),
+                                    Text(
+                                      "Máx ${_weatherSummary!['daily']['temperature_2m_max'][0].toInt()}°",
+                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                    ),
+                                    Text(
+                                      "Mín ${_weatherSummary!['daily']['temperature_2m_min'][0].toInt()}°",
+                                      style: const TextStyle(color: Colors.white70),
+                                    ),
                                     const SizedBox(height: 4),
-                                    Text(
-                                      "Hoje: Mín ${_weatherSummary!['daily']['temperature_2m_min'][0]}° / Máx ${_weatherSummary!['daily']['temperature_2m_max'][0]}°",
-                                      style: const TextStyle(color: Colors.white70, fontSize: 12)
-                                    ),
-                                    Text(
-                                      "Chance Chuva: ${_weatherSummary!['daily']['precipitation_probability_max'][0]}%",
-                                      style: const TextStyle(color: Colors.lightBlueAccent, fontWeight: FontWeight.bold, fontSize: 12)
-                                    ),
+                                    Row(
+                                      children: [
+                                        const Icon(Icons.water_drop, color: Colors.lightBlueAccent, size: 14),
+                                        Text(
+                                          " ${_weatherSummary!['daily']['precipitation_probability_max'][0]}%",
+                                          style: const TextStyle(color: Colors.lightBlueAccent, fontWeight: FontWeight.bold, fontSize: 13),
+                                        ),
+                                      ],
+                                    )
                                   ],
                                 ),
                               ),
-                              const Icon(Icons.arrow_forward_ios, color: Colors.white70, size: 16)
+                              const Icon(Icons.arrow_forward_ios, color: Colors.white30, size: 16)
                             ],
                           ),
                   ),
@@ -487,7 +523,6 @@ class _MonitorTabState extends State<_MonitorTab> {
                 ),
               ),
             ] else 
-              // Se não tiver dados mas tiver GPS, já mostramos o Card de clima. O resto é placeholder.
               const Center(child: Text("Aguardando dados dos sensores...", style: TextStyle(color: Colors.grey))),
           ],
         ),
@@ -501,14 +536,8 @@ class _MonitorTabState extends State<_MonitorTab> {
 }
 
 // ============================================================================
-// AS OUTRAS CLASSES (Schedules, History) PERMANECEM IGUAIS
+// 📅 ABA 2: AGENDAMENTOS E LOGS
 // ============================================================================
-// (O código continua com _SchedulesTab, _ScheduleListView, _EventsLogView...)
-// (Não repeti aqui para economizar espaço, mas mantenha o que estava abaixo no arquivo original)
-// Se você substituiu TUDO, certifique-se de que _SchedulesTab e as outras classes estão lá.
-// Se preferir, posso enviar o arquivo GIGANTE inteiro novamente, mas é melhor manter as partes finais.
-// ATENÇÃO: PARA EVITAR ERROS, VOU ENVIAR O FINAL DO ARQUIVO AQUI EMBAIXO:
-
 class _SchedulesTab extends StatelessWidget {
   final DeviceModel device;
   final SchedulesService _service = SchedulesService();
@@ -547,6 +576,9 @@ class _SchedulesTab extends StatelessWidget {
   }
 }
 
+// ============================================================================
+// WIDGET AUXILIAR: LISTA DE AGENDAMENTOS
+// ============================================================================
 class _ScheduleListView extends StatelessWidget {
   final DeviceModel device;
   final SchedulesService service;
@@ -642,6 +674,9 @@ class _ScheduleListView extends StatelessWidget {
   }
 }
 
+// ============================================================================
+// WIDGET AUXILIAR: LOG DE EVENTOS (PAGINADO)
+// ============================================================================
 class _EventsLogView extends StatefulWidget {
   final DeviceModel device;
   const _EventsLogView({required this.device});
