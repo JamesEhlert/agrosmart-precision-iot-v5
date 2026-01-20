@@ -42,3 +42,20 @@ Para não travarmos o desenvolvimento configurando políticas complexas de segur
     Roadmap de Segurança: Colocamos no nosso Roadmap uma tarefa prioritária chamada "Blindagem de API" para implementar essa validação de Token antes de lançar o app na loja.
 
 Podemos seguir assim? Vamos implementar a lógica do botão agora, sabendo que depois vamos colocar esse "porteiro" na AWS?
+###################################################################################################################################################
+
+########################################################################################################################################################
+#######################################################################################################################################################
+
+🔍 Observações Iniciais (Para o futuro Produto)
+
+Como você pretende transformar isso em produto:
+
+    Hardcoded Secrets: O secrets.h tem os certificados da AWS fixos. Em um produto final, você precisará de um processo de "Provisioning" (o app envia o certificado via Bluetooth/AP na primeira configuração), ou cada ESP32 terá que ser gravado com chaves únicas na fábrica.
+
+    Custos Híbridos: A função Lambda Scheduler_Logic conecta no Google a cada execução. Em escala (milhares de devices), isso gera latência e custo de tráfego de saída (egress). Mas para o protótipo e MVP, funciona perfeitamente.
+
+    Índices: Notei a menção aos índices compostos obrigatórios no Firestore para a query do Scheduler funcionar. Isso é vital.
+    
+#######################################################################################################################################################
+#######################################################################################################################################################

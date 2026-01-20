@@ -24,7 +24,7 @@
 // ===================================================================================
 // 1. CONFIGURAÇÕES GERAIS
 // ===================================================================================
-const uint32_t TELEMETRY_INTERVAL_MS = 600000; // Tempo entre envios (1 min)
+const uint32_t TELEMETRY_INTERVAL_MS = 600000; // Tempo entre envios (10 min)
 const uint32_t OLED_SWITCH_MS = 2000;         // Tempo de troca de tela (3s)
 const long BRT_OFFSET_SEC = -10800;           // Fuso horário (-3h)
 
