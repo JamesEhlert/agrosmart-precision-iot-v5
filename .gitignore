@@ -23,4 +23,4 @@ credentials/
 src/secrets.h
 include/secrets.h
 firmware/src/secrets.h
-firmware/include/secrets.h
+firmware/include/secrets.hdocs/
