@@ -1,64 +1,70 @@
 // ARQUIVO: lib/models/device_model.dart
 
-/// Classe que representa as configurações editáveis de um dispositivo.
 class DeviceSettings {
-  double targetMoisture;   // Umidade alvo (Se sensor > isso, não rega)
-  int manualDuration;      // Tempo da rega manual (minutos)
-  String deviceName;       // Nome amigável do dispositivo
-  int timezoneOffset;      // Deslocamento do UTC (ex: -3 para Brasília)
+  double targetMoisture;
+  int manualDuration;
+  String deviceName;
+  int timezoneOffset;
+  double latitude;
+  double longitude;
+  bool enableWeatherControl;
   
-  // --- NOVOS CAMPOS PARA INTEGRAÇÃO DE CLIMA ---
-  double latitude;         // Latitude geográfica do dispositivo
-  double longitude;        // Longitude geográfica do dispositivo
-  bool enableWeatherControl; // Ativa/Desativa a inteligência baseada em chuva
+  // Lista de capacidades (quais sensores esse dispositivo tem)
+  List<String> capabilities;
 
   DeviceSettings({
     required this.targetMoisture,
     required this.manualDuration,
     required this.deviceName,
     required this.timezoneOffset,
-    // Valores padrão no construtor para evitar null
     this.latitude = 0.0,
     this.longitude = 0.0,
     this.enableWeatherControl = false,
+    required this.capabilities,
   });
 
-  /// Cria uma instância de DeviceSettings a partir de um Map (JSON do Firestore).
   factory DeviceSettings.fromMap(Map<String, dynamic> map) {
+    // --- LÓGICA DE COMPATIBILIDADE ---
+    // Se o campo 'capabilities' não existir (dispositivos antigos),
+    // assumimos que ele é um dispositivo completo (V5) para não sumir os sensores.
+    var caps = <String>['air', 'soil', 'light', 'rain', 'uv']; 
+    
+    if (map['capabilities'] != null) {
+      // Converte a lista dinâmica do Firebase para List<String>
+      caps = List<String>.from(map['capabilities']);
+    }
+
     return DeviceSettings(
       targetMoisture: (map['target_soil_moisture'] ?? 60).toDouble(),
       manualDuration: map['manual_valve_duration'] ?? 5,
       deviceName: map['device_name'] ?? 'Dispositivo Sem Nome',
-      timezoneOffset: map['timezone_offset'] ?? -3, // Padrão Brasília
-      
-      // Mapeamento dos novos campos com valores de segurança (fallback)
+      timezoneOffset: map['timezone_offset'] ?? -3,
+      // Garante que lat/lon sejam double mesmo que venham como int do banco
       latitude: (map['latitude'] ?? 0.0).toDouble(),
       longitude: (map['longitude'] ?? 0.0).toDouble(),
       enableWeatherControl: map['enable_weather_control'] ?? false,
+      capabilities: caps,
     );
   }
 
-  /// Converte o objeto para Map (JSON) para salvar no Firestore.
   Map<String, dynamic> toMap() {
     return {
       'target_soil_moisture': targetMoisture,
       'manual_valve_duration': manualDuration,
       'device_name': deviceName,
       'timezone_offset': timezoneOffset,
-      
-      // Salvando os novos campos
       'latitude': latitude,
       'longitude': longitude,
       'enable_weather_control': enableWeatherControl,
+      'capabilities': capabilities,
     };
   }
 }
 
-/// Modelo principal que representa um Dispositivo completo (Estado + Configurações).
 class DeviceModel {
-  final String id;              // ID do documento/hardware
-  final bool isOnline;          // Status de conexão
-  final DeviceSettings settings; // Objeto de configurações aninhado
+  final String id;
+  final bool isOnline;
+  final DeviceSettings settings;
 
   DeviceModel({
     required this.id,
@@ -66,7 +72,6 @@ class DeviceModel {
     required this.settings,
   });
 
-  /// Factory para criar o modelo vindo do Firestore.
   factory DeviceModel.fromFirestore(Map<String, dynamic> data, String docId) {
     return DeviceModel(
       id: docId,

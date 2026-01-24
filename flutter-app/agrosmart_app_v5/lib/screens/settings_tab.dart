@@ -105,9 +105,9 @@ class _SettingsTabState extends State<SettingsTab> {
         throw Exception('Permissão de localização permanentemente negada. Habilite nas configurações do Android.');
       }
 
-      // 3. Pega a posição atual (Precisão alta)
+      // 3. Pega a posição atual (Correção de Warning: desiredAccuracy movido para LocationSettings)
       Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high)
       );
 
       setState(() {
@@ -147,6 +147,10 @@ class _SettingsTabState extends State<SettingsTab> {
         latitude: _latitude,
         longitude: _longitude,
         enableWeatherControl: _enableWeatherControl,
+        
+        // --- CORREÇÃO PRINCIPAL: REPASSAR CAPABILITIES ---
+        // Mantém a lista original do dispositivo (não deixa perder os sensores)
+        capabilities: widget.device.settings.capabilities,
       );
 
       await _deviceService.updateDeviceSettings(widget.device.id, newSettings);
@@ -167,7 +171,7 @@ class _SettingsTabState extends State<SettingsTab> {
     }
   }
 
-  // Mantive a função de deletar igual (omitida para brevidade se necessário, mas aqui está completa)
+  // Função para deletar dispositivo
   Future<void> _deleteDevice() async {
     final confirm = await showDialog<bool>(
         context: context,
@@ -193,6 +197,7 @@ class _SettingsTabState extends State<SettingsTab> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Dispositivo desvinculado."), backgroundColor: Colors.grey));
       }
+      // Opcional: Navegar para dashboard ou resetar estado
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
@@ -279,7 +284,7 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
 
               const SizedBox(height: 20),
-              // --- NOVA SEÇÃO: INTELIGÊNCIA METEOROLÓGICA ---
+              // --- SEÇÃO: INTELIGÊNCIA METEOROLÓGICA ---
               _buildSectionHeader("Inteligência Meteorológica"),
               Card(
                 elevation: 2,

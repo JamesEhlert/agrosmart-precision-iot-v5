@@ -1,9 +1,9 @@
 // ARQUIVO: lib/screens/dashboard_screen.dart
 
 import 'dart:async';
-import 'dart:convert'; // Necessário para decodificar JSON do clima
+import 'dart:convert'; // Decodificar JSON do clima
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http; // Necessário para API do clima
+import 'package:http/http.dart' as http; // Requisições HTTP para API de clima
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart'; 
 
@@ -44,12 +44,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final DeviceService _deviceService = DeviceService();
   final AuthService _authService = AuthService();
   final AwsService _awsService = AwsService();
+  
   String? _selectedDeviceId;
   int _currentIndex = 0;
   TelemetryModel? _telemetryData;
   bool _isLoadingTelemetry = true;
   Timer? _refreshTimer;
 
+  // Verifica se o dispositivo enviou dados recentemente
   bool get _isDeviceOnline {
     if (_telemetryData == null) return false;
     final now = DateTime.now().toUtc();
@@ -65,6 +67,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _manageTimer() {
     _refreshTimer?.cancel();
+    // Só atualiza automaticamente se estiver na aba "Monitor" (índice 0)
     if (_selectedDeviceId != null && _currentIndex == 0) {
       _fetchTelemetry(_selectedDeviceId!);
       _refreshTimer = Timer.periodic(
@@ -95,6 +98,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  // Modal para trocar de dispositivo
   void _showDevicePicker(List<String> userDevices) {
     showModalBottomSheet(
       context: context,
@@ -139,6 +143,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // Dialog para vincular novo hardware
   void _showAddDeviceDialog() {
     final idController = TextEditingController();
     final nameController = TextEditingController();
@@ -202,6 +207,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           );
         }
 
+        // Seleciona o primeiro dispositivo se nenhum estiver selecionado
         if (_selectedDeviceId == null || !userDevices.contains(_selectedDeviceId)) {
           Future.microtask(() {
             if (mounted) {
@@ -215,12 +221,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return StreamBuilder<DeviceModel>(
           stream: _deviceService.getDeviceStream(_selectedDeviceId!),
           builder: (context, snapshotDevice) {
+            // Se ainda não carregou, usa um modelo placeholder
             final device = snapshotDevice.data ?? DeviceModel(
               id: _selectedDeviceId!, isOnline: false,
-              settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: "Carregando...", timezoneOffset: -3)
+              settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: "Carregando...", timezoneOffset: -3, capabilities: [])
             );
             final isReallyOnline = _isDeviceOnline;
 
+            // Lista de Abas
             final List<Widget> pages = [
               _MonitorTab(
                 device: device,
@@ -282,7 +290,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 // ============================================================================
-// 📊 ABA 1: MONITORAMENTO (COM CARD MELHORADO E CORREÇÃO DE LOAD)
+// 📊 ABA 1: MONITORAMENTO (COM CAPABILITIES E WEATHER CARD)
 // ============================================================================
 class _MonitorTab extends StatefulWidget {
   final DeviceModel device;
@@ -320,7 +328,7 @@ class _MonitorTabState extends State<_MonitorTab> {
     }
   }
 
-  // Busca resumo do tempo
+  // Busca resumo do tempo (Open-Meteo)
   Future<void> _fetchWeatherSummary() async {
     final lat = widget.device.settings.latitude;
     final lon = widget.device.settings.longitude;
@@ -380,7 +388,12 @@ class _MonitorTabState extends State<_MonitorTab> {
     if (widget.isLoading) return const Center(child: CircularProgressIndicator(color: Colors.green));
 
     final data = widget.telemetryData;
+    // Verifica se tem GPS
     final bool hasGps = widget.device.settings.latitude != 0 && widget.device.settings.longitude != 0;
+    
+    // --- LÓGICA DE CAPABILITIES (CAPACIDADES) ---
+    // Pega a lista de sensores que este dispositivo suporta
+    final caps = widget.device.settings.capabilities;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -399,6 +412,7 @@ class _MonitorTabState extends State<_MonitorTab> {
             const SizedBox(height: 10),
 
             // --- CARD DE CLIMA MELHORADO ---
+            // Só aparece se tiver GPS configurado
             if (hasGps)
               Card(
                 color: Colors.blueAccent,
@@ -423,7 +437,7 @@ class _MonitorTabState extends State<_MonitorTab> {
                           )
                         : Row(
                             children: [
-                              // 1. Ícone Grande e Condição
+                              // Ícone e Condição
                               Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
@@ -434,14 +448,14 @@ class _MonitorTabState extends State<_MonitorTab> {
                               ),
                               const SizedBox(width: 20),
                               
-                              // 2. Temperatura Principal
+                              // Temperatura
                               Text(
                                 "${_weatherSummary!['current']['temperature_2m'].toInt()}°",
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 42),
                               ),
                               const SizedBox(width: 20),
 
-                              // 3. Detalhes (Máx, Mín, Chuva)
+                              // Detalhes
                               Expanded(
                                 child: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
@@ -478,32 +492,60 @@ class _MonitorTabState extends State<_MonitorTab> {
             if (hasGps) const SizedBox(height: 16),
 
             if (data != null) ...[
-              _buildSectionTitle("Ambiente & Solo"),
-              Card(
-                elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-                    _SensorWidget(icon: Icons.thermostat, value: "${data.airTemp.toStringAsFixed(1)}°C", label: "Temp Ar", color: Colors.orange),
-                    _SensorWidget(icon: Icons.water_drop_outlined, value: "${data.airHumidity.toStringAsFixed(0)}%", label: "Umid. Ar", color: Colors.blueAccent),
-                    _SensorWidget(icon: Icons.grass, value: "${data.soilMoisture.toStringAsFixed(0)}%", label: "Umid. Solo", color: Colors.brown),
-                  ]),
+              
+              // --- SEÇÃO 1: AMBIENTE & SOLO (DINÂMICO) ---
+              // Só desenha essa seção se o dispositivo tiver 'air' OU 'soil'
+              if (caps.contains('air') || caps.contains('soil')) ...[
+                _buildSectionTitle("Ambiente & Solo"),
+                Card(
+                  elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround, 
+                      children: [
+                        // Só mostra Temp/Hum se tiver capacidade 'air'
+                        if (caps.contains('air')) ...[
+                           _SensorWidget(icon: Icons.thermostat, value: "${data.airTemp.toStringAsFixed(1)}°C", label: "Temp Ar", color: Colors.orange),
+                           _SensorWidget(icon: Icons.water_drop_outlined, value: "${data.airHumidity.toStringAsFixed(0)}%", label: "Umid. Ar", color: Colors.blueAccent),
+                        ],
+                        // Só mostra Solo se tiver capacidade 'soil'
+                        if (caps.contains('soil'))
+                           _SensorWidget(icon: Icons.grass, value: "${data.soilMoisture.toStringAsFixed(0)}%", label: "Umid. Solo", color: Colors.brown),
+                      ]
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              _buildSectionTitle("Externo"),
-              Card(
-                elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-                    _SensorWidget(icon: Icons.wb_sunny, value: data.uvIndex.toStringAsFixed(1), label: "Índice UV", color: Colors.amber),
-                    _SensorWidget(icon: Icons.light_mode, value: data.lightLevel.toStringAsFixed(0), label: "Luz (Lux)", color: Colors.yellow[700]!),
-                    _SensorWidget(icon: Icons.cloud, value: "${data.rainRaw}", label: "Chuva (Raw)", color: Colors.blueGrey),
-                  ]),
+                const SizedBox(height: 16),
+              ],
+
+              // --- SEÇÃO 2: EXTERNO (DINÂMICO) ---
+              // Só desenha essa seção se tiver 'uv', 'light' OU 'rain'
+              if (caps.any((c) => ['uv', 'light', 'rain'].contains(c))) ...[
+                _buildSectionTitle("Externo"),
+                Card(
+                  elevation: 4, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround, 
+                      children: [
+                        if (caps.contains('uv'))
+                          _SensorWidget(icon: Icons.wb_sunny, value: data.uvIndex.toStringAsFixed(1), label: "Índice UV", color: Colors.amber),
+                        
+                        if (caps.contains('light'))
+                          _SensorWidget(icon: Icons.light_mode, value: data.lightLevel.toStringAsFixed(0), label: "Luz (Lux)", color: Colors.yellow[700]!),
+                        
+                        if (caps.contains('rain'))
+                          _SensorWidget(icon: Icons.cloud, value: "${data.rainRaw}", label: "Chuva (Raw)", color: Colors.blueGrey),
+                      ]
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 24),
+                const SizedBox(height: 24),
+              ],
+
+              // --- AÇÕES ---
               _buildSectionTitle("Ações"),
               SizedBox(
                 height: 50,

@@ -43,7 +43,9 @@ class DeviceService {
               targetMoisture: 0, 
               manualDuration: 0, 
               deviceName: 'Desconhecido',
-              timezoneOffset: -3 // Default Brasília se não encontrar
+              timezoneOffset: -3, // Default Brasília se não encontrar
+              // CORREÇÃO 1: Adicionado capabilities vazio para satisfazer o modelo
+              capabilities: [] 
             )
         );
       }
@@ -57,21 +59,29 @@ class DeviceService {
     if (user == null) throw Exception("Usuário não logado");
 
     // 1. Verifica se o dispositivo existe na coleção 'devices' (Segurança)
-    final deviceDoc = await _firestore.collection('devices').doc(deviceId).get();
+    final deviceRef = _firestore.collection('devices').doc(deviceId);
+    final deviceDoc = await deviceRef.get();
 
     // Se não existir, criamos o registro inicial do dispositivo
     if (!deviceDoc.exists) {
-      await _firestore.collection('devices').doc(deviceId).set({
+      // CORREÇÃO 2: Usar o método toMap() do modelo para garantir consistência
+      // Isso já inclui o campo 'capabilities' padrão.
+      
+      final defaultSettings = DeviceSettings(
+        deviceName: initialName,
+        targetMoisture: 60,
+        manualDuration: 5,
+        timezoneOffset: -3,
+        // Assume que novos dispositivos são completos por padrão (V5)
+        capabilities: ['air', 'soil', 'light', 'rain', 'uv'] 
+      );
+
+      await deviceRef.set({
         'device_id': deviceId,
         'online': false,
         'owner_uid': user.uid,
         'created_at': FieldValue.serverTimestamp(),
-        'settings': {
-          'device_name': initialName,
-          'target_soil_moisture': 60,
-          'manual_valve_duration': 5,
-          'timezone_offset': -3, // Adicionamos o padrão Brasília na criação
-        }
+        'settings': defaultSettings.toMap(), // Salva o mapa completo
       });
     }
 
@@ -81,7 +91,6 @@ class DeviceService {
     });
   }
 
-  // --- NOVO MÉTODO ADICIONADO AQUI ---
   // Atualiza as configurações (Nome, Umidade, Tempo Manual, Fuso) no Firestore
   Future<void> updateDeviceSettings(String deviceId, DeviceSettings newSettings) async {
     // Atualiza apenas o campo 'settings' dentro do documento do dispositivo
@@ -89,7 +98,8 @@ class DeviceService {
       'settings': newSettings.toMap(),
     });
   }
-  // --- NOVO MÉTODO: Desvincular Dispositivo ---
+
+  // Desvincular Dispositivo
   Future<void> unlinkDeviceFromUser(String deviceId) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception("Usuário não logado");
