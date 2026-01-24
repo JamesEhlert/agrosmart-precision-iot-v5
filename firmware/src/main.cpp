@@ -3,8 +3,8 @@
  * NOME DO PROJETO: AGROSMART PRECISION SYSTEM
  * ===================================================================================
  * AUTOR: James Rafael Ehlert
- * DATA: Dezembro/2025
- * VERSÃO: 5.13
+ * DATA: Janeiro/2026
+ * VERSÃO: 5.14 (Atualizado com Filtro de Device ID)
  * ===================================================================================
  */
 
@@ -24,7 +24,7 @@
 // ===================================================================================
 // 1. CONFIGURAÇÕES GERAIS
 // ===================================================================================
-const uint32_t TELEMETRY_INTERVAL_MS = 600000; // Tempo entre envios (10 min)
+const uint32_t TELEMETRY_INTERVAL_MS = 60000; // Tempo entre envios (1 min)
 const uint32_t OLED_SWITCH_MS = 2000;         // Tempo de troca de tela (3s)
 const long BRT_OFFSET_SEC = -10800;           // Fuso horário (-3h)
 
@@ -86,25 +86,19 @@ SemaphoreHandle_t i2cMutex;  // Proteção do barramento I2C
 SemaphoreHandle_t dataMutex; // Proteção da memória g_latestData
 
 // ===================================================================================
-// 4. CALLBACK MQTT (Ouvindo Comandos)
+// 4. CALLBACK MQTT (Ouvindo Comandos - ATUALIZADO)
 // ===================================================================================
 /**
  * Esta função é chamada automaticamente quando chega uma mensagem no tópico subscrito.
  * Tópico: agrosmart/v5/command
- * Payload Esperado: {"action": "on", "duration": 10}
+ * Payload Esperado: {"device_id": "...", "action": "on", "duration": 10}
  */
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.println("\n>>> [MQTT] MENSAGEM RECEBIDA! <<<");
     Serial.printf("Tópico: %s\n", topic);
     
-    // Converte payload para string para debug
-    char debugPayload[length + 1];
-    memcpy(debugPayload, payload, length);
-    debugPayload[length] = '\0';
-    Serial.printf("Payload Bruto: %s\n", debugPayload);
-
-    // Parse do JSON
-    StaticJsonDocument<256> doc;
+    // Buffer aumentado para garantir parsing seguro
+    StaticJsonDocument<512> doc;
     DeserializationError error = deserializeJson(doc, payload, length);
 
     if (error) {
@@ -113,20 +107,30 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         return;
     }
 
+    // --- NOVA LÓGICA DE FILTRO DE DISPOSITIVO ---
+    const char* targetDevice = doc["device_id"];
+    
+    // Se o comando tem um destinatário E não sou eu (THINGNAME), ignoro.
+    if (targetDevice != nullptr && strcmp(targetDevice, THINGNAME) != 0) {
+        Serial.printf("[IGNORADO] Comando direcionado para: %s (Eu sou: %s)\n", targetDevice, THINGNAME);
+        return;
+    }
+
+    // Se chegou aqui, o comando é para mim (ou é broadcast)
     const char* action = doc["action"];
     int duration = doc["duration"];
 
     // Verifica comando "on"
     if (strcmp(action, "on") == 0) {
         if (duration > 0) {
-            Serial.printf("[COMANDO] LIGAR Válvula por %d segundos.\n", duration);
+            Serial.printf("[COMANDO] ✅ LIGAR Válvula por %d segundos.\n", duration);
             digitalWrite(PIN_VALVE, HIGH); // Ativa pino físico
             g_valveState = true;
             g_valveOffTime = millis() + (duration * 1000); // Calcula hora de desligar
             Serial.println("[VALVULA] Estado: LIGADO (ON)");
         } else {
             // Se duração for 0, é comando de parada imediata
-            Serial.println("[COMANDO] PARAR Válvula imediatamente.");
+            Serial.println("[COMANDO] ⏹️ PARAR Válvula imediatamente.");
             digitalWrite(PIN_VALVE, LOW);
             g_valveState = false;
             g_valveOffTime = 0;
@@ -453,8 +457,8 @@ void taskDisplay(void *pvParameters) {
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n\n=== AGROSMART V5.13 INICIANDO ===");
-    Serial.println("Configuração: PINO VALVULA = GPIO 2 | COMANDO = 'on'");
+    Serial.println("\n\n=== AGROSMART V5.14 INICIANDO ===");
+    Serial.println("Configuração: PINO VALVULA = GPIO 2 | FILTRO = DEVICE_ID");
 
     // Inicializa Semáforos
     i2cMutex = xSemaphoreCreateMutex();
