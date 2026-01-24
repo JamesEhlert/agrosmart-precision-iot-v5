@@ -1,71 +1,53 @@
 import json
 import boto3
 
-# ==============================================================================
-# CONFIGURAÇÕES
-# ==============================================================================
-# Cliente para publicar mensagens no IoT Core
-iot_client = boto3.client('iot-data')
-
-# Tópico MQTT onde o ESP32 está ouvindo
-TOPIC = 'agrosmart/v5/command'
+# Configuração
+client = boto3.client('iot-data', region_name='us-east-2') # Confirme sua região
+TOPIC = "agrosmart/v5/command"
 
 def lambda_handler(event, context):
-    """
-    Função Lambda para enviar comandos (Downlink) para o ESP32.
-    Recebe POST request com JSON: {"action": "on", "duration": 10}
-    """
-    print(f"Evento Recebido: {event}")
-
     try:
-        # Tenta ler o corpo da requisição (Body)
-        # Se vier vazio, assume objeto vazio para não quebrar
-        body_str = event.get('body', '{}')
-        body = json.loads(body_str) if body_str else {}
+        # Debug: Ver o que chegou do Flutter
+        print("Evento recebido:", event)
         
-        # Extração dos parâmetros
+        # 1. Extrair dados do corpo da requisição (HTTP POST)
+        # O Flutter manda o body como string dentro de 'body', ou direto no event dependendo da config
+        body = json.loads(event['body']) if 'body' in event else event
+        
+        device_id = body.get('device_id')
         action = body.get('action')
-        duration = body.get('duration')
+        duration = body.get('duration', 0)
+        
+        if not device_id or not action:
+            return {
+                'statusCode': 400,
+                'body': json.dumps({'message': 'Erro: device_id e action são obrigatórios'})
+            }
 
-        # Validação Rigorosa
-        # Agora o comando esperado é "on", não mais "water"
-        if action != 'on' or duration is None:
-            return build_response(400, {
-                'error': 'Comando invalido.', 
-                'expected_format': {'action': 'on', 'duration': 10} # Exemplo em segundos
-            })
-
-        # Monta o pacote MQTT para o ESP32
-        payload = {
-            'action': 'on',
-            'duration': int(duration)
+        # 2. Montar o Payload MQTT com o device_id (Unicast)
+        mqtt_payload = {
+            "device_id": device_id,  # <--- O SEGREDO ESTÁ AQUI
+            "action": action,
+            "duration": duration
         }
-
-        # Publica no Tópico
-        print(f"Publicando no tópico {TOPIC}: {payload}")
-        iot_client.publish(
+        
+        # 3. Publicar no Tópico
+        print(f"Publicando no tópico {TOPIC}: {mqtt_payload}")
+        
+        client.publish(
             topic=TOPIC,
-            qos=1, # Qualidade de Serviço 1 (Garante entrega pelo menos uma vez)
-            payload=json.dumps(payload)
+            qos=1,
+            payload=json.dumps(mqtt_payload)
         )
-
-        return build_response(200, {
-            'message': 'Comando enviado para a fila MQTT com sucesso!',
-            'sent_payload': payload
-        })
-
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps({'message': 'Comando enviado com sucesso', 'target': device_id})
+        }
+        
     except Exception as e:
-        print(f"ERRO: {str(e)}")
-        return build_response(500, {'error': 'Erro interno', 'details': str(e)})
-
-def build_response(status, body):
-    """Auxiliar para resposta HTTP com CORS"""
-    return {
-        'statusCode': status,
-        'headers': {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*', # Importante para o App funcionar
-            'Access-Control-Allow-Methods': 'POST, OPTIONS'
-        },
-        'body': json.dumps(body)
-    }
+        print("Erro:", str(e))
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'message': 'Erro interno na Lambda', 'error': str(e)})
+        }
