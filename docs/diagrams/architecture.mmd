@@ -1,0 +1,48 @@
+flowchart LR
+  subgraph Device["ESP32 Device (PlatformIO/Arduino)"]
+    Sensors["Sensors\n(AHT10, soil, rain, light, UV)"]
+    OLED["OLED SSD1306 (optional)"]
+    Valve["Valve/Relay GPIO2\n(HIGH=ON, LOW=OFF)"]
+    MQTT["MQTT TLS Client"]
+    SD["SD Card CSV\n/telemetry_v5.csv"]
+    Sensors --> MQTT
+    Sensors --> OLED
+    MQTT --> SD
+    MQTT --> Valve
+  end
+
+  subgraph AWS["AWS (us-east-2)"]
+    IOT["AWS IoT Core\nEndpoint: a39ub0vpt280b2-ats..."]
+    Rule["IoT Rule\nAgroSmart_V5_To_DynamoDB\nSELECT * FROM telemetry topic"]
+    DDB["DynamoDB\nAgroTelemetryData_V5\nPK device_id / SK timestamp"]
+    APIGW["API Gateway (prod)\nGET /telemetry\nPOST /command"]
+    LGet["Lambda: GetTelemetry"]
+    LCmd["Lambda: SendCommand"]
+    Sch["Lambda: Scheduler\nEventBridge rate(1 minute)"]
+  end
+
+  subgraph Firebase["Firebase / Google"]
+    Auth["Firebase Auth"]
+    FS["Cloud Firestore\nusers/devices/schedules/history"]
+    WX["Open-Meteo\nWeather API"]
+  end
+
+  subgraph App["Flutter Mobile App"]
+    UI["Dashboard\nMonitor / Schedules / History / Settings"]
+  end
+
+  MQTT -->|publish telemetry\nagrosmart/v5/telemetry| IOT
+  IOT --> Rule --> DDB
+
+  UI --> Auth
+  UI --> FS
+
+  UI -->|GET /telemetry| APIGW --> LGet --> DDB
+  UI -->|POST /command| APIGW --> LCmd -->|publish command\nagrosmart/v5/command| IOT
+  IOT -->|deliver command\nagrosmart/v5/command| MQTT
+
+  Sch --> FS
+  Sch -->|latest soil moisture| DDB
+  Sch --> WX
+  Sch -->|publish command| IOT
+  Sch -->|write history log| FS
