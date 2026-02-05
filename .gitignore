@@ -1,26 +1,15 @@
-# Arquivos de compilação do PlatformIO
-.pio/
-.pioenvs/
-.piolibdeps/
+# --- Secrets / credentials (DO NOT COMMIT) ---
+firmware/include/secrets.h
+**/.env
+**/.env.*
+**/*.pem
+**/*.crt
+**/*.key
+**/*.p12
 
-# Arquivos de sistema e IDE
-.vscode/
-.DS_Store
-*.code-workspace
+# Firebase mobile secrets (usually should not be committed)
+**/google-services.json
+**/GoogleService-Info.plist
 
-# Arquivos de configuração com senhas (CRÍTICO)
-src/secrets.h
-include/secrets.h
-google-services.json
-firebase_options.dart
-keys/
-credentials/
-
-# Arquivos temporários
-*.log
-
-# Segredos e Senhas
-src/secrets.h
-include/secrets.h
-firmware/src/secrets.h
-firmware/include/secrets.hdocs/
+# Optional: keep private notes out of git
+docs/private/
