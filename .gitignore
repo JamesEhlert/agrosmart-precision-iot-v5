@@ -13,3 +13,7 @@ firmware/include/secrets.h
 
 # Optional: keep private notes out of git
 docs/private/
+
+# Debug logs (do not commit)
+dataconnect-debug.log
+**/dataconnect-debug.log
