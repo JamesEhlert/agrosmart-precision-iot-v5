@@ -1,6 +1,7 @@
 // ARQUIVO: lib/screens/history_tab.dart
 
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart'; // Importante: Biblioteca de gráficos
 
@@ -52,7 +53,7 @@ class _HistoryTabState extends State<HistoryTab> {
 }
 
 // ============================================================================
-// 📊 ABA 1: LISTA (Código original simplificado)
+// 📊 ABA 1: LISTA
 // ============================================================================
 class _SensorsListView extends StatefulWidget {
   final DeviceModel device;
@@ -65,8 +66,26 @@ class _SensorsListViewState extends State<_SensorsListView> {
   final AwsService _awsService = AwsService();
   final List<TelemetryModel> _data = [];
   String? _nextToken;
-  bool _isLoading = true;
+  bool _isLoading = false;
   bool _hasMore = true;
+
+  // Evita spam de SnackBars
+  DateTime? _lastSnackAt;
+  String? _lastSnackKey;
+
+  void _snackOnce(String key, String msg, {Color color = Colors.red, int cooldownSeconds = 20}) {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final shouldShow = (_lastSnackKey != key) ||
+        (_lastSnackAt == null) ||
+        (now.difference(_lastSnackAt!).inSeconds >= cooldownSeconds);
+    if (!shouldShow) return;
+    _lastSnackKey = key;
+    _lastSnackAt = now;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: color),
+    );
+  }
 
   @override
   void initState() {
@@ -75,20 +94,41 @@ class _SensorsListViewState extends State<_SensorsListView> {
   }
 
   Future<void> _loadData() async {
+    if (_isLoading) return;
     setState(() => _isLoading = true);
-    final res = await _awsService.getTelemetryHistory(widget.device.id, nextToken: _nextToken, limit: 50);
-    if (mounted) {
+
+    try {
+      final res = await _awsService.getTelemetryHistory(
+        widget.device.id,
+        nextToken: _nextToken,
+        limit: 50,
+      );
+
+      if (!mounted) return;
       setState(() {
         _data.addAll(res.items);
         _nextToken = res.nextToken;
         _hasMore = res.nextToken != null;
         _isLoading = false;
       });
+    } on UnauthorizedException catch (_) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_list_401", "Sessão expirada. Faça login novamente.", color: Colors.red);
+      await FirebaseAuth.instance.signOut();
+    } on ForbiddenException catch (_) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_list_403", "Sem permissão para acessar o histórico deste dispositivo.", color: Colors.orange);
+      if (mounted) setState(() => _hasMore = false);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_list_${e.statusCode}", "Erro (${e.statusCode}): ${e.message}", color: Colors.red);
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_list_unknown", "Erro ao carregar histórico: $e", color: Colors.red);
     }
   }
 
   String _fmt(DateTime d) {
-    // Ajuste fuso horário
     final local = d.add(Duration(hours: widget.device.settings.timezoneOffset));
     return DateFormat('dd/MM HH:mm').format(local);
   }
@@ -96,21 +136,22 @@ class _SensorsListViewState extends State<_SensorsListView> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading && _data.isEmpty) return const Center(child: CircularProgressIndicator());
-    
+
     return ListView.builder(
       padding: const EdgeInsets.all(8),
       itemCount: _data.length + 1,
       itemBuilder: (ctx, i) {
         if (i == _data.length) {
-          return _hasMore 
-            ? TextButton(onPressed: _loadData, child: const Text("Carregar Mais")) 
-            : const Padding(padding: EdgeInsets.all(16), child: Center(child: Text("Fim")));
+          return _hasMore
+              ? TextButton(onPressed: _loadData, child: const Text("Carregar Mais"))
+              : const Padding(padding: EdgeInsets.all(16), child: Center(child: Text("Fim")));
         }
         final item = _data[i];
         return Card(
           elevation: 2,
           child: ListTile(
-            leading: Text(_fmt(item.timestamp), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+            leading: Text(_fmt(item.timestamp),
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
             title: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -125,11 +166,13 @@ class _SensorsListViewState extends State<_SensorsListView> {
     );
   }
 
-  Widget _iconText(IconData i, String t, Color c) => Row(children: [Icon(i, size: 14, color: c), const SizedBox(width: 4), Text(t)]);
+  Widget _iconText(IconData i, String t, Color c) => Row(
+        children: [Icon(i, size: 14, color: c), const SizedBox(width: 4), Text(t)],
+      );
 }
 
 // ============================================================================
-// 📈 ABA 2: GRÁFICOS (NOVA FUNCIONALIDADE)
+// 📈 ABA 2: GRÁFICOS
 // ============================================================================
 class _ChartsView extends StatefulWidget {
   final DeviceModel device;
@@ -140,24 +183,59 @@ class _ChartsView extends StatefulWidget {
 
 class _ChartsViewState extends State<_ChartsView> {
   final AwsService _awsService = AwsService();
-  
-  // Filtros
+
   DateTimeRange? _dateRange;
-  // Mapa de sensores: Chave = Nome Técnico, Valor = [Nome Exibição, Cor, Ativo]
+
   final Map<String, dynamic> _sensorsConfig = {
-    'soil': {'label': 'Solo (%)', 'color': Colors.brown, 'active': true, 'getter': (TelemetryModel t) => t.soilMoisture},
-    'air_hum': {'label': 'Ar (%)', 'color': Colors.blue, 'active': false, 'getter': (TelemetryModel t) => t.airHumidity},
-    'temp': {'label': 'Temp (°C)', 'color': Colors.orange, 'active': false, 'getter': (TelemetryModel t) => t.airTemp},
-    'uv': {'label': 'UV', 'color': Colors.purple, 'active': false, 'getter': (TelemetryModel t) => t.uvIndex},
+    'soil': {
+      'label': 'Solo (%)',
+      'color': Colors.brown,
+      'active': true,
+      'getter': (TelemetryModel t) => t.soilMoisture
+    },
+    'air_hum': {
+      'label': 'Ar (%)',
+      'color': Colors.blue,
+      'active': false,
+      'getter': (TelemetryModel t) => t.airHumidity
+    },
+    'temp': {
+      'label': 'Temp (°C)',
+      'color': Colors.orange,
+      'active': false,
+      'getter': (TelemetryModel t) => t.airTemp
+    },
+    'uv': {
+      'label': 'UV',
+      'color': Colors.purple,
+      'active': false,
+      'getter': (TelemetryModel t) => t.uvIndex
+    },
   };
 
   List<TelemetryModel> _chartData = [];
   bool _isLoading = false;
 
+  DateTime? _lastSnackAt;
+  String? _lastSnackKey;
+
+  void _snackOnce(String key, String msg, {Color color = Colors.red, int cooldownSeconds = 20}) {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final shouldShow = (_lastSnackKey != key) ||
+        (_lastSnackAt == null) ||
+        (now.difference(_lastSnackAt!).inSeconds >= cooldownSeconds);
+    if (!shouldShow) return;
+    _lastSnackKey = key;
+    _lastSnackAt = now;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: color),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
-    // Padrão: Últimas 24 horas
     final now = DateTime.now();
     _dateRange = DateTimeRange(start: now.subtract(const Duration(hours: 24)), end: now);
     _fetchChartData();
@@ -167,20 +245,35 @@ class _ChartsViewState extends State<_ChartsView> {
     if (_dateRange == null) return;
     setState(() => _isLoading = true);
 
-    // Busca dados filtrados por data (limite alto pois é gráfico)
-    final res = await _awsService.getTelemetryHistory(
-      widget.device.id, 
-      start: _dateRange!.start.toUtc(), 
-      end: _dateRange!.end.toUtc(),
-      limit: 2000 // Traz até 500 pontos para o gráfico
-    );
+    try {
+      final res = await _awsService.getTelemetryHistory(
+        widget.device.id,
+        start: _dateRange!.start.toUtc(),
+        end: _dateRange!.end.toUtc(),
+        limit: 2000,
+      );
 
-    if (mounted) {
+      if (!mounted) return;
       setState(() {
-        // Ordena por data crescente para o gráfico desenhar certo (esquerda -> direita)
         _chartData = res.items.reversed.toList();
         _isLoading = false;
       });
+    } on UnauthorizedException catch (_) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_chart_401", "Sessão expirada. Faça login novamente.", color: Colors.red);
+      await FirebaseAuth.instance.signOut();
+    } on ForbiddenException catch (_) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_chart_403", "Sem permissão para acessar dados deste dispositivo.", color: Colors.orange);
+      if (mounted) setState(() => _chartData = []);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_chart_${e.statusCode}", "Erro (${e.statusCode}): ${e.message}", color: Colors.red);
+      if (mounted) setState(() => _chartData = []);
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+      _snackOnce("hist_chart_unknown", "Erro ao carregar gráfico: $e", color: Colors.red);
+      if (mounted) setState(() => _chartData = []);
     }
   }
 
@@ -191,9 +284,16 @@ class _ChartsViewState extends State<_ChartsView> {
       lastDate: DateTime.now(),
       initialDateRange: _dateRange,
       builder: (context, child) {
-        return Theme(data: ThemeData.light().copyWith(primaryColor: Colors.green, colorScheme: const ColorScheme.light(primary: Colors.green)), child: child!);
-      }
+        return Theme(
+          data: ThemeData.light().copyWith(
+            primaryColor: Colors.green,
+            colorScheme: const ColorScheme.light(primary: Colors.green),
+          ),
+          child: child!,
+        );
+      },
     );
+
     if (picked != null) {
       setState(() => _dateRange = picked);
       _fetchChartData();
@@ -209,16 +309,14 @@ class _ChartsViewState extends State<_ChartsView> {
           padding: const EdgeInsets.all(8.0),
           child: Column(
             children: [
-              // Seletor de Data
               OutlinedButton.icon(
                 onPressed: _pickDateRange,
                 icon: const Icon(Icons.calendar_today, size: 16),
-                label: Text(_dateRange == null 
-                  ? "Selecionar Data" 
-                  : "${DateFormat('dd/MM').format(_dateRange!.start)} - ${DateFormat('dd/MM').format(_dateRange!.end)}"),
+                label: Text(_dateRange == null
+                    ? "Selecionar Data"
+                    : "${DateFormat('dd/MM').format(_dateRange!.start)} - ${DateFormat('dd/MM').format(_dateRange!.end)}"),
               ),
               const SizedBox(height: 8),
-              // Chips de Sensores
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
@@ -234,7 +332,7 @@ class _ChartsViewState extends State<_ChartsView> {
                         checkmarkColor: conf['color'],
                         labelStyle: TextStyle(
                           color: conf['active'] ? conf['color'] : Colors.black54,
-                          fontWeight: conf['active'] ? FontWeight.bold : FontWeight.normal
+                          fontWeight: conf['active'] ? FontWeight.bold : FontWeight.normal,
                         ),
                         onSelected: (bool selected) {
                           setState(() {
@@ -254,91 +352,93 @@ class _ChartsViewState extends State<_ChartsView> {
 
         // --- 2. ÁREA DO GRÁFICO ---
         Expanded(
-          child: _isLoading 
-            ? const Center(child: CircularProgressIndicator()) 
-            : _chartData.isEmpty 
-              ? const Center(child: Text("Sem dados neste período.")) 
-              : Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 24, 16, 16), // Margem extra no topo para labels
-                  child: LineChart(
-                    LineChartData(
-                      lineBarsData: _generateLines(),
-                      titlesData: FlTitlesData(
-                        bottomTitles: AxisTitles(
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            getTitlesWidget: (val, meta) {
-                              // Mostra Hora no eixo X
-                              if (val.toInt() >= 0 && val.toInt() < _chartData.length) {
-                                // Reduz labels para não encavalar (mostra a cada 5 pontos aprox)
-                                if (val.toInt() % (_chartData.length ~/ 5 + 1) == 0) {
-                                  final date = _chartData[val.toInt()].timestamp.add(Duration(hours: widget.device.settings.timezoneOffset));
-                                  return Padding(
-                                    padding: const EdgeInsets.only(top: 8.0),
-                                    child: Text(DateFormat('HH:mm').format(date), style: const TextStyle(fontSize: 10)),
-                                  );
-                                }
-                              }
-                              return const SizedBox.shrink();
-                            },
-                            interval: 1, // Controle fino feito no getTitlesWidget
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _chartData.isEmpty
+                  ? const Center(child: Text("Sem dados neste período."))
+                  : Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+                      child: LineChart(
+                        LineChartData(
+                          lineBarsData: _generateLines(),
+                          titlesData: FlTitlesData(
+                            bottomTitles: AxisTitles(
+                              sideTitles: SideTitles(
+                                showTitles: true,
+                                getTitlesWidget: (val, meta) {
+                                  if (val.toInt() >= 0 && val.toInt() < _chartData.length) {
+                                    if (val.toInt() % (_chartData.length ~/ 5 + 1) == 0) {
+                                      final date = _chartData[val.toInt()].timestamp
+                                          .add(Duration(hours: widget.device.settings.timezoneOffset));
+                                      return Padding(
+                                        padding: const EdgeInsets.only(top: 8.0),
+                                        child: Text(DateFormat('HH:mm').format(date),
+                                            style: const TextStyle(fontSize: 10)),
+                                      );
+                                    }
+                                  }
+                                  return const SizedBox.shrink();
+                                },
+                                interval: 1,
+                              ),
+                            ),
+                            leftTitles: const AxisTitles(
+                              sideTitles: SideTitles(showTitles: true, reservedSize: 40),
+                            ),
+                            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                           ),
-                        ),
-                        leftTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: true, reservedSize: 40),
-                        ),
-                        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      ),
-                      borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey.withValues(alpha: 0.2))),
-                      gridData: FlGridData(show: true, drawVerticalLine: false),
-                      // Tooltip ao tocar
-                      lineTouchData: LineTouchData(
-                        touchTooltipData: LineTouchTooltipData(
-                          // substitua pelo seu theme se preferir
-                          getTooltipItems: (touchedSpots) {
-                            return touchedSpots.map((spot) {
-                              // Formata a data do ponto
-                              final index = spot.x.toInt();
-                              if (index < 0 || index >= _chartData.length) return null;
-                              final date = _chartData[index].timestamp.add(Duration(hours: widget.device.settings.timezoneOffset));
-                              final timeStr = DateFormat('HH:mm').format(date);
-                              
-                              return LineTooltipItem(
-                                "$timeStr\n${spot.y.toStringAsFixed(1)}",
-                                const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                              );
-                            }).toList();
-                          },
+                          borderData: FlBorderData(
+                            show: true,
+                            border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+                          ),
+                          gridData: FlGridData(show: true, drawVerticalLine: false),
+                          lineTouchData: LineTouchData(
+                            touchTooltipData: LineTouchTooltipData(
+                              getTooltipItems: (touchedSpots) {
+                                return touchedSpots.map((spot) {
+                                  final index = spot.x.toInt();
+                                  if (index < 0 || index >= _chartData.length) return null;
+                                  final date = _chartData[index].timestamp
+                                      .add(Duration(hours: widget.device.settings.timezoneOffset));
+                                  final timeStr = DateFormat('HH:mm').format(date);
+                                  return LineTooltipItem(
+                                    "$timeStr\n${spot.y.toStringAsFixed(1)}",
+                                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                  );
+                                }).toList();
+                              },
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ),
         ),
       ],
     );
   }
 
-  // Gera as linhas do gráfico baseadas nos Chips selecionados
   List<LineChartBarData> _generateLines() {
     List<LineChartBarData> lines = [];
 
     _sensorsConfig.forEach((key, conf) {
       if (conf['active'] == true) {
-        lines.add(LineChartBarData(
-          spots: _chartData.asMap().entries.map((e) {
-            // Eixo X = Índice da lista (0, 1, 2...)
-            // Eixo Y = Valor do sensor obtido via 'getter'
-            final val = (conf['getter'] as Function)(e.value) as double;
-            return FlSpot(e.key.toDouble(), val);
-          }).toList(),
-          isCurved: true,
-          color: conf['color'],
-          barWidth: 3,
-          dotData: const FlDotData(show: false), // Remove bolinhas para ficar clean
-          belowBarData: BarAreaData(show: true, color: (conf['color'] as Color).withValues(alpha: 0.1)),
-        ));
+        lines.add(
+          LineChartBarData(
+            spots: _chartData.asMap().entries.map((e) {
+              final val = (conf['getter'] as Function)(e.value) as double;
+              return FlSpot(e.key.toDouble(), val);
+            }).toList(),
+            isCurved: true,
+            color: conf['color'],
+            barWidth: 3,
+            dotData: const FlDotData(show: false),
+            belowBarData: BarAreaData(
+              show: true,
+              color: (conf['color'] as Color).withValues(alpha: 0.1),
+            ),
+          ),
+        );
       }
     });
 
