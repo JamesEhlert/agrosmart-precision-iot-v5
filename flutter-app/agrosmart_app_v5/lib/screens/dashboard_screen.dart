@@ -1059,8 +1059,8 @@ class _ScheduleListView extends StatelessWidget {
                       Switch(
                         value: schedule.isEnabled,
                         activeTrackColor: Colors.green,
-                        thumbColor: MaterialStateProperty.resolveWith((states) {
-                          if (states.contains(MaterialState.selected)) return Colors.white;
+                        thumbColor: WidgetStateProperty.resolveWith((states) {
+                          if (states.contains(WidgetState.selected)) return Colors.white;
                           return Colors.grey[200];
                         }),
                         onChanged: (val) {
