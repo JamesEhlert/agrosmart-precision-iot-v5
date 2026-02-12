@@ -47,3 +47,4 @@ app.*.map.json
 # local patches
 *.patch
 
+*.patch
