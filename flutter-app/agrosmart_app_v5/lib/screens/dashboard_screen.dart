@@ -1059,8 +1059,8 @@ class _ScheduleListView extends StatelessWidget {
                       Switch(
                         value: schedule.isEnabled,
                         activeTrackColor: Colors.green,
-                        thumbColor: MaterialStateProperty.resolveWith((states) {
-                          if (states.contains(MaterialState.selected)) return Colors.white;
+                        thumbColor: WidgetStateProperty.resolveWith((states) {
+                          if (states.contains(WidgetState.selected)) return Colors.white;
                           return Colors.grey[200];
                         }),
                         onChanged: (val) {
@@ -1119,146 +1119,378 @@ class _EventsLogView extends StatefulWidget {
 
 class _EventsLogViewState extends State<_EventsLogView> {
   final HistoryService _historyService = HistoryService();
+
   final List<ActivityLogModel> _logs = [];
   DocumentSnapshot? _lastDoc;
-  bool _isLoading = true;
-  bool _isLoadingMore = false;
+  bool _isLoading = false;
   bool _hasMore = true;
+
+  // Chips / filtros no topo
+  String _mainFilter = 'all'; // all | schedule | ack
+  String _ackFilter = 'all';  // all | received | started | done | error
 
   @override
   void initState() {
     super.initState();
-    _loadFirstPage();
+    _fetchLogs();
   }
 
-  Future<void> _loadFirstPage() async {
-    if (!mounted) return;
-    setState(() {
-      _isLoading = true;
-      _logs.clear();
-      _lastDoc = null;
-      _hasMore = true;
-    });
+  // ---------- Helpers ACK ----------
+  bool _isAckLog(ActivityLogModel log) {
+    final t = log.type.toLowerCase().trim();
+    if (t == 'ack') return true;
+    final msg = log.message.trimLeft();
+    return msg.toUpperCase().startsWith('ACK ');
+  }
+
+  String? _parseAckStatus(ActivityLogModel log) {
+    // Prefer mensagem do lambda: "ACK <status> | ..."
+    final msg = log.message.trimLeft();
+    if (!msg.toUpperCase().startsWith('ACK ')) {
+      // fallback: se o backend mudar para type "ack_<status>"
+      final t = log.type.toLowerCase();
+      if (t.startsWith('ack_')) return t.substring(4);
+      return null;
+    }
+    final rest = msg.substring(4);
+    final cut = rest.indexOf('|');
+    final st = (cut >= 0 ? rest.substring(0, cut) : rest).trim().toLowerCase();
+    if (st.isEmpty) return null;
+    // normaliza alguns sinônimos
+    if (st == 'ok' || st == 'success') return 'done';
+    if (st == 'start' || st == 'running') return 'started';
+    return st;
+  }
+
+  List<ActivityLogModel> get _filteredLogs {
+    if (_mainFilter == 'all') return _logs;
+
+    if (_mainFilter == 'schedule') {
+      return _logs.where((l) => !_isAckLog(l)).toList();
+    }
+
+    // _mainFilter == 'ack'
+    final onlyAck = _logs.where(_isAckLog).toList();
+    if (_ackFilter == 'all') return onlyAck;
+
+    return onlyAck.where((l) => (_parseAckStatus(l) ?? '') == _ackFilter).toList();
+  }
+
+  Map<String, int> _countAckStatuses() {
+    final Map<String, int> counts = {
+      'received': 0,
+      'started': 0,
+      'done': 0,
+      'error': 0,
+    };
+
+    for (final l in _logs) {
+      if (!_isAckLog(l)) continue;
+      final st = _parseAckStatus(l);
+      if (st == null) continue;
+      if (counts.containsKey(st)) counts[st] = (counts[st] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  // ---------- Data fetch ----------
+  Future<void> _fetchLogs({bool refresh = false}) async {
+    if (_isLoading) return;
+
+    setState(() => _isLoading = true);
 
     try {
-      final response = await _historyService.getActivityLogs(widget.device.id, limit: 20);
+      final result = await _historyService.getActivityLogs(
+        widget.device.id,
+        lastDocument: refresh ? null : _lastDoc,
+        limit: 20,
+      );
 
-      if (mounted) {
-        setState(() {
-          _logs.addAll(response.logs);
-          _lastDoc = response.lastDoc;
-          if (response.logs.length < 20) _hasMore = false;
-          _isLoading = false;
-        });
-      }
+      setState(() {
+        if (refresh) _logs.clear();
+
+        _logs.addAll(result.logs);
+        _lastDoc = result.lastDoc;
+
+        // Como a response não expõe "hasMore", usamos o tamanho da página como heurística.
+        _hasMore = result.logs.length == 20;
+
+        // Se eu estava filtrando um status de ACK que não existe mais,
+        // volta pro "all" para não parecer que a lista "sumiu".
+        if (_mainFilter == 'ack' && _ackFilter != 'all') {
+          final any = _logs.any((l) => _parseAckStatus(l) == _ackFilter);
+          if (!any) _ackFilter = 'all';
+        }
+      });
     } catch (e) {
+      print('Erro ao buscar logs: $e');
+    } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  Future<void> _loadNextPage() async {
-    if (_isLoadingMore || !_hasMore) return;
-    setState(() => _isLoadingMore = true);
+  Future<void> _refresh() async => _fetchLogs(refresh: true);
 
-    try {
-      final response = await _historyService.getActivityLogs(
-        widget.device.id,
-        lastDocument: _lastDoc,
-        limit: 20,
-      );
+  void _loadMore() {
+    if (_hasMore && !_isLoading) _fetchLogs();
+  }
 
-      if (mounted) {
-        setState(() {
-          _logs.addAll(response.logs);
-          _lastDoc = response.lastDoc;
-          if (response.logs.length < 20) _hasMore = false;
-          _isLoadingMore = false;
-        });
+  // ---------- UI helpers ----------
+  IconData _getTypeIcon(ActivityLogModel log) {
+    // ACK com ícone por status
+    if (_isAckLog(log)) {
+      final st = _parseAckStatus(log);
+      switch (st) {
+        case 'received':
+          return Icons.mark_email_read_outlined;
+        case 'started':
+          return Icons.play_circle_outline;
+        case 'done':
+          return Icons.check_circle_outline;
+        case 'error':
+          return Icons.error_outline;
+        default:
+          return Icons.notifications_active_outlined;
       }
-    } catch (e) {
-      if (mounted) setState(() => _isLoadingMore = false);
     }
-  }
 
-  String _formatDateTime(DateTime time) {
-    return DateFormat('dd/MM/yyyy HH:mm').format(time);
-  }
-
-  Widget _getTypeIcon(String type) {
-    switch (type) {
-      case 'execution':
-        return const Icon(Icons.check_circle, color: Colors.green);
-      case 'skipped':
-        return const Icon(Icons.remove_circle_outline, color: Colors.orange);
-      case 'error':
-        return const Icon(Icons.error, color: Colors.red);
+    switch (log.type) {
+      case 'schedule_executed':
+        return Icons.check_circle;
+      case 'schedule_skipped':
+        return Icons.skip_next;
+      case 'schedule_error':
+        return Icons.error;
+      case 'valve_on':
+        return Icons.water_drop;
+      case 'valve_off':
+        return Icons.water_drop_outlined;
       default:
-        return const Icon(Icons.info, color: Colors.blue);
+        return Icons.info;
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) return const Center(child: CircularProgressIndicator(color: Colors.green));
+  Color _getTypeColor(ActivityLogModel log) {
+    if (_isAckLog(log)) {
+      final st = _parseAckStatus(log);
+      switch (st) {
+        case 'received':
+          return Colors.blue;
+        case 'started':
+          return Colors.orange;
+        case 'done':
+          return Colors.green;
+        case 'error':
+          return Colors.red;
+        default:
+          return Colors.purple;
+      }
+    }
 
-    if (_logs.isEmpty) {
-      return Center(
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.event_busy, size: 60, color: Colors.grey),
-          const SizedBox(height: 10),
-          const Text("Nenhum evento registrado ainda."),
-          TextButton(onPressed: _loadFirstPage, child: const Text("Atualizar"))
-        ]),
+    switch (log.type) {
+      case 'schedule_executed':
+        return Colors.green;
+      case 'schedule_skipped':
+        return Colors.orange;
+      case 'schedule_error':
+        return Colors.red;
+      case 'valve_on':
+        return Colors.blue;
+      case 'valve_off':
+        return Colors.grey;
+      default:
+        return Colors.blueGrey;
+    }
+  }
+
+  Widget _buildChipsHeader() {
+    final total = _logs.length;
+    final ackTotal = _logs.where(_isAckLog).length;
+    final schedTotal = total - ackTotal;
+    final ackCounts = _countAckStatuses();
+
+    Widget choice(String key, String label, int count) {
+      final selected = _mainFilter == key;
+      return ChoiceChip(
+        selected: selected,
+        label: Text('$label ($count)'),
+        onSelected: (v) {
+          if (!v) return;
+          setState(() {
+            _mainFilter = key;
+            if (_mainFilter != 'ack') _ackFilter = 'all';
+          });
+        },
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: _loadFirstPage,
-      color: Colors.green,
-      child: ListView.separated(
-        padding: const EdgeInsets.all(12),
-        itemCount: _logs.length + 1,
-        separatorBuilder: (ctx, i) => const Divider(height: 1),
-        itemBuilder: (context, index) {
-          if (index == _logs.length) {
-            return _buildLoadMoreButton();
-          }
-
-          final log = _logs[index];
-          return ListTile(
-            leading: _getTypeIcon(log.type),
-            title: Text(log.message, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            subtitle: Text("${_formatDateTime(log.timestamp)} • Fonte: ${log.source}"),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          );
+    Widget ackChip(String st, String label) {
+      final selected = _ackFilter == st;
+      final count = st == 'all'
+          ? ackTotal
+          : (ackCounts[st] ?? 0);
+      return ChoiceChip(
+        selected: selected,
+        label: Text('$label ($count)'),
+        onSelected: (v) {
+          if (!v) return;
+          setState(() => _ackFilter = st);
         },
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                choice('all', 'Todos', total),
+                choice('schedule', 'Agendamentos', schedTotal),
+                choice('ack', 'ACK', ackTotal),
+              ],
+            ),
+          ),
+          if (_mainFilter == 'ack') ...[
+            const SizedBox(height: 10),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ackChip('all', 'Todos'),
+                  ackChip('received', 'Recebido'),
+                  ackChip('started', 'Iniciado'),
+                  ackChip('done', 'Concluído'),
+                  ackChip('error', 'Erro'),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          const Divider(height: 1),
+        ],
       ),
     );
   }
 
-  Widget _buildLoadMoreButton() {
-    if (!_hasMore) {
-      return const Padding(
-        padding: EdgeInsets.all(16.0),
-        child: Center(child: Text("Fim dos registros.", style: TextStyle(color: Colors.grey))),
-      );
-    }
-    if (_isLoadingMore) {
-      return const Padding(
-        padding: EdgeInsets.all(16.0),
-        child: Center(child: CircularProgressIndicator(strokeWidth: 2, color: Colors.green)),
-      );
-    }
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 32),
-      child: OutlinedButton.icon(
-        onPressed: _loadNextPage,
-        icon: const Icon(Icons.download),
-        label: const Text("CARREGAR MAIS ANTIGOS"),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: Colors.green,
-          side: const BorderSide(color: Colors.green),
+  void _showLogDetails(ActivityLogModel log) {
+    final isAck = _isAckLog(log);
+    final ackStatus = _parseAckStatus(log);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(isAck ? 'ACK do Dispositivo' : 'Detalhes do Evento'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (isAck && ackStatus != null) ...[
+                Text('Status: $ackStatus'),
+                const SizedBox(height: 8),
+              ],
+              Text(log.message),
+              const SizedBox(height: 16),
+              Text('Tipo: ${log.type}'),
+              Text('Fonte: ${log.source}'),
+              Text('Data: ${DateFormat('dd/MM/yyyy HH:mm').format(log.timestamp)}'),
+            ],
+          ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fechar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleLogs = _filteredLogs;
+
+    if (_logs.isEmpty && _isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_logs.isEmpty) {
+      // Mesmo sem logs, mantém uma dica simples
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.event_note, size: 64, color: Colors.grey),
+            const SizedBox(height: 16),
+            const Text(
+              'Nenhum evento registrado',
+              style: TextStyle(fontSize: 18, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _refresh,
+              child: const Text('Atualizar'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView.separated(
+        padding: EdgeInsets.zero,
+        itemCount: visibleLogs.length + 2, // header + logs + loadMore
+        separatorBuilder: (context, index) {
+          // evita divisor depois do header
+          if (index == 0) return const SizedBox.shrink();
+          return const Divider();
+        },
+        itemBuilder: (context, index) {
+          if (index == 0) {
+            return _buildChipsHeader();
+          }
+
+          // load more card
+          if (index == visibleLogs.length + 1) {
+            if (!_hasMore) return const SizedBox(height: 24);
+            return Padding(
+              padding: const EdgeInsets.all(16),
+              child: ElevatedButton(
+                onPressed: _isLoading ? null : _loadMore,
+                child: _isLoading
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Carregar mais'),
+              ),
+            );
+          }
+
+          final log = visibleLogs[index - 1];
+
+          return ListTile(
+            leading: CircleAvatar(
+              backgroundColor: _getTypeColor(log).withOpacity(0.2),
+              child: Icon(_getTypeIcon(log), color: _getTypeColor(log)),
+            ),
+            title: Text(log.message),
+            subtitle: Text(
+              '${DateFormat('dd/MM HH:mm').format(log.timestamp)} • ${log.source}',
+            ),
+            onTap: () => _showLogDetails(log),
+          );
+        },
       ),
     );
   }

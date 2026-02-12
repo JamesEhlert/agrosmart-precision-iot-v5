@@ -294,7 +294,7 @@ class _SettingsTabState extends State<SettingsTab> {
                     SwitchListTile(
                       title: const Text("Previsão de Chuva Inteligente", style: TextStyle(fontWeight: FontWeight.bold)),
                       subtitle: const Text("Não irrigar se houver previsão de chuva nas próximas 6h."),
-                      activeColor: Colors.green,
+                      activeThumbColor: Colors.green,
                       value: _enableWeatherControl,
                       onChanged: (val) => setState(() => _enableWeatherControl = val),
                     ),

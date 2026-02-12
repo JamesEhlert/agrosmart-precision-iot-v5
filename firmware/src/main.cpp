@@ -147,6 +147,11 @@ static const uint32_t PENDING_FLUSH_MAX_MS_DEFAULT       = 8000;
 static const uint16_t MQTT_PORT = 8883;
 static const uint16_t MQTT_BUFFER_SIZE = 2048; // <<<<<< CORREÇÃO PRINCIPAL p/ publish falhando por payload > 256
 
+// ACK de comandos (novo)
+#ifndef AWS_IOT_ACK_TOPIC
+  #define AWS_IOT_ACK_TOPIC "agrosmart/v5/ack"
+#endif
+
 // ===================================================================================
 // 2) ESTRUTURAS
 // ===================================================================================
@@ -193,6 +198,7 @@ static bool g_valveState = false;
 static uint32_t g_valveOffTimeMs = 0;
 static uint32_t g_valveLastDebugMs = 0;
 static char g_lastCommandId[48] = {0};
+static char g_activeCommandId[48] = {0}; // command_id do comando atualmente em execução (válvula ON)
 
 // FreeRTOS
 static QueueHandle_t sensorQueue;
@@ -500,6 +506,69 @@ static bool mqttPublish(const char* topic, const uint8_t* payload, uint32_t len,
   } else {
     LOGD("[AWS] publish OK len=%lu topic=%s", (unsigned long)len, topic);
   }
+  return ok;
+}
+
+// ===================================================================================
+// 7.1) ACK DE COMANDOS (command_id + status)
+// ===================================================================================
+static DateTime getSystemTime(); // forward declaration (definido na seção TIME)
+
+static uint32_t epochNow() {
+  // Usa RTC (atualizado por NTP quando possível). Best-effort: se RTC falhar, cai para 0.
+  DateTime nowUTC = getSystemTime();
+  return nowUTC.unixtime();
+}
+
+static void safeCopy(char* dst, size_t dstSz, const char* src) {
+  if (!dst || dstSz == 0) return;
+  if (!src) { dst[0] = '\0'; return; }
+  strncpy(dst, src, dstSz - 1);
+  dst[dstSz - 1] = '\0';
+}
+
+static bool publishCommandAck(const char* commandId,
+                              const char* status,
+                              const char* action = nullptr,
+                              int32_t durationS = -1,
+                              const char* reason = nullptr,
+                              const char* error = nullptr) {
+  if (!commandId || commandId[0] == '\0') {
+    LOGW("[ACK] command_id vazio. Skip.");
+    return false;
+  }
+  if (!status || status[0] == '\0') status = "unknown";
+
+  StaticJsonDocument<384> doc;
+  doc["device_id"] = THINGNAME;
+  doc["command_id"] = commandId;
+  doc["status"] = status;
+  doc["ts"] = epochNow();
+
+  JsonObject sys = doc.createNestedObject("sys");
+  sys["fw"] = FW_VERSION;
+  sys["uptime_s"] = (uint32_t)(msNow()/1000UL);
+  if (g_wifiConnected) sys["rssi"] = WiFi.RSSI();
+
+  if (action) doc["action"] = action;
+  if (durationS >= 0) doc["duration"] = durationS;
+  if (reason) doc["reason"] = reason;
+  if (error) doc["error"] = error;
+
+  char out[512];
+  size_t outLen = serializeJson(doc, out, sizeof(out));
+  if (outLen == 0) {
+    LOGE("[ACK] serializeJson falhou");
+    return false;
+  }
+
+  // ArduinoJson pode adicionar  ao final do buffer; evitar enviar bytes nulos no MQTT
+  if (outLen > 0 && out[outLen - 1] == '\0') {
+    outLen--;
+  }
+
+  bool ok = mqttPublish(AWS_IOT_ACK_TOPIC, (const uint8_t*)out, (uint32_t)outLen, false);
+  LOGI("[ACK] status=%s cmd=%s ok=%d", status, commandId, (int)ok);
   return ok;
 }
 
@@ -872,40 +941,113 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
+  // 1) valida device alvo (se vier no payload)
   const char* targetDevice = doc["device_id"];
   if (targetDevice && strcmp(targetDevice, THINGNAME) != 0) {
     LOGD("[MQTT] Ignorado (target=%s eu=%s)", targetDevice, THINGNAME);
     return;
   }
 
-  const char* cmdId = doc["command_id"];
-  if (cmdId) {
-    strncpy(g_lastCommandId, cmdId, sizeof(g_lastCommandId)-1);
-    g_lastCommandId[sizeof(g_lastCommandId)-1] = '\0';
-    LOGI("[MQTT] command_id=%s", g_lastCommandId);
-  }
+  // 2) command_id + action: copiar campos ANTES de publicar ACK (PubSubClient reutiliza buffer RX)
+  char cmdLocal[48] = {0};
+  char actionLocal[24] = {0};
 
-  const char* action = doc["action"];
-  if (!action) {
-    LOGE("[MQTT] Campo 'action' ausente.");
-    return;
+  const char* cmdIdRaw = doc["command_id"];
+  if (cmdIdRaw && cmdIdRaw[0] != '\0') {
+    safeCopy(g_lastCommandId, sizeof(g_lastCommandId), cmdIdRaw);
+  } else {
+    // fallback (não deveria ocorrer, pois a Lambda já gera command_id)
+    snprintf(cmdLocal, sizeof(cmdLocal), "local-%lu", (unsigned long)msNow());
+    safeCopy(g_lastCommandId, sizeof(g_lastCommandId), cmdLocal);
+    LOGW("[MQTT] command_id ausente. Usando fallback=%s", g_lastCommandId);
+  }
+  const char* cmdId = g_lastCommandId; // estável
+
+  const char* actionRaw = doc["action"];
+  if (actionRaw && actionRaw[0] != '\0') {
+    safeCopy(actionLocal, sizeof(actionLocal), actionRaw);
   }
 
   int32_t duration = doc["duration"] | 0;
+
+  LOGI("[MQTT] command_id=%s action=%s duration=%ld", cmdId,
+       actionLocal[0] ? actionLocal : "(null)", (long)duration);
+
+  if (!actionLocal[0]) {
+    LOGE("[MQTT] Campo 'action' ausente.");
+    publishCommandAck(cmdId, "error", nullptr, -1, "invalid_payload", "missing_action");
+    return;
+  }
+
+  const char* action = actionLocal;
+
+  // 3) ACK imediato: recebemos e validamos o comando
+  publishCommandAck(cmdId, "received", action, duration, nullptr, nullptr);
+
+  // 4) aplica comando
+  bool wasOn = false;
+  if (lockSem(valveMutex, 10)) { wasOn = g_valveState; unlockSem(valveMutex); }
 
   if (strcmp(action, "on") == 0) {
     if (duration > 0) {
       LOGI("[COMANDO] LIGAR por %lds", (long)duration);
       valveApplyCommand(true, duration);
+
+      bool nowOn = false;
+      if (lockSem(valveMutex, 50)) {
+        nowOn = g_valveState;
+        if (nowOn) {
+          safeCopy(g_activeCommandId, sizeof(g_activeCommandId), cmdId);
+        }
+        unlockSem(valveMutex);
+      }
+
+      if (nowOn) {
+        publishCommandAck(cmdId, "started", action, duration, nullptr, nullptr);
+      } else {
+        publishCommandAck(cmdId, "error", action, duration, "valve_not_on", "valve_failed_to_start");
+      }
     } else {
+      // compat: seu firmware tratava "on" com duration=0 como STOP
       LOGI("[COMANDO] STOP imediato (duration=0)");
       valveApplyCommand(false, 0);
+
+      char doneCmd[48] = {0};
+      if (lockSem(valveMutex, 50)) {
+        if (g_activeCommandId[0] != '\0') {
+          safeCopy(doneCmd, sizeof(doneCmd), g_activeCommandId);
+        } else {
+          safeCopy(doneCmd, sizeof(doneCmd), cmdId);
+        }
+        g_activeCommandId[0] = '\0';
+        unlockSem(valveMutex);
+      } else {
+        safeCopy(doneCmd, sizeof(doneCmd), cmdId);
+      }
+
+      publishCommandAck(doneCmd, "done", "off", 0, "manual_stop", nullptr);
     }
   } else if (strcmp(action, "off") == 0) {
     LOGI("[COMANDO] OFF");
     valveApplyCommand(false, 0);
+
+    char doneCmd[48] = {0};
+    if (lockSem(valveMutex, 50)) {
+      if (g_activeCommandId[0] != '\0') {
+        safeCopy(doneCmd, sizeof(doneCmd), g_activeCommandId);
+      } else {
+        safeCopy(doneCmd, sizeof(doneCmd), cmdId);
+      }
+      g_activeCommandId[0] = '\0';
+      unlockSem(valveMutex);
+    } else {
+      safeCopy(doneCmd, sizeof(doneCmd), cmdId);
+    }
+
+    publishCommandAck(doneCmd, "done", "off", 0, wasOn ? "manual_off" : "already_off", nullptr);
   } else {
     LOGW("[COMANDO] ação desconhecida: %s", action);
+    publishCommandAck(cmdId, "error", action, duration, "unknown_action", "unsupported_action");
   }
 }
 
@@ -1074,8 +1216,8 @@ static void taskNetworkStorage(void *pvParameters) {
   client.setKeepAlive(60);
   client.setSocketTimeout(10);
 
-  LOGI("[AWS] PUB=%s | SUB=%s | endpoint=%s:%u | buf=%u",
-       AWS_IOT_PUBLISH_TOPIC, AWS_IOT_SUBSCRIBE_TOPIC, AWS_IOT_ENDPOINT, MQTT_PORT, (unsigned)client.getBufferSize());
+  LOGI("[AWS] PUB=%s | SUB=%s | ACK=%s | endpoint=%s:%u | buf=%u",
+       AWS_IOT_PUBLISH_TOPIC, AWS_IOT_SUBSCRIBE_TOPIC, AWS_IOT_ACK_TOPIC, AWS_IOT_ENDPOINT, MQTT_PORT, (unsigned)client.getBufferSize());
 
   BackoffState wifiB, mqttB;
   uint32_t lastNtpAttempt = 0;
@@ -1083,16 +1225,36 @@ static void taskNetworkStorage(void *pvParameters) {
   TelemetryData received{};
 
   for (;;) {
-    // 1) FAIL-SAFE válvula (wrap-safe)
+    // 1) FAIL-SAFE válvula (wrap-safe) + ACK de término (timeout/failsafe)
+    bool doAck = false;
+    bool ackIsError = false;
+    char ackCmd[48] = {0};
+    const char* ackReason = nullptr;
+
     if (lockSem(valveMutex, 10)) {
       if (g_valveState) {
         uint32_t now = msNow();
+
         if (g_valveOffTimeMs == 0) {
           LOGE("[FAIL-SAFE] Válvula ON sem deadline. Forçando OFF.");
           valveSetOffLocked();
+          if (g_activeCommandId[0] != '\0') {
+            safeCopy(ackCmd, sizeof(ackCmd), g_activeCommandId);
+            g_activeCommandId[0] = '\0';
+            doAck = true;
+            ackIsError = true;
+            ackReason = "failsafe_no_deadline";
+          }
         } else if (timeReached(now, g_valveOffTimeMs)) {
           LOGI("[VALVULA] Tempo esgotado! OFF.");
           valveSetOffLocked();
+          if (g_activeCommandId[0] != '\0') {
+            safeCopy(ackCmd, sizeof(ackCmd), g_activeCommandId);
+            g_activeCommandId[0] = '\0';
+            doAck = true;
+            ackIsError = false;
+            ackReason = "timeout";
+          }
         } else if (timeReached(now, g_valveLastDebugMs + VALVE_DEBUG_EVERY_MS)) {
           uint32_t remaining = (uint32_t)(g_valveOffTimeMs - now);
           LOGI("[VALVULA] Regando... falta ~%lums", (unsigned long)remaining);
@@ -1101,6 +1263,16 @@ static void taskNetworkStorage(void *pvParameters) {
       }
       unlockSem(valveMutex);
     }
+
+    // publica ACK fora do mutex
+    if (doAck && ackCmd[0] != '\0') {
+      if (ackIsError) {
+        publishCommandAck(ackCmd, "error", "off", 0, ackReason, "failsafe");
+      } else {
+        publishCommandAck(ackCmd, "done", "off", 0, ackReason, nullptr);
+      }
+    }
+
 
     // 2) Wi-Fi
     if (WiFi.status() != WL_CONNECTED) {
