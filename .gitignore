@@ -17,3 +17,6 @@ docs/private/
 # Debug logs (do not commit)
 dataconnect-debug.log
 **/dataconnect-debug.log
+
+# backups locais
+*.bak
