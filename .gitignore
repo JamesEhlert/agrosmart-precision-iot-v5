@@ -20,3 +20,11 @@ dataconnect-debug.log
 
 # backups locais
 *.bak
+
+# Secrets (never commit)
+firmware/include/secrets.h
+
+# Local context bundles (do not commit)
+_context_bundle/
+agrosmart_context_bundle.tar.gz
+repo_tree.txt
