@@ -4,9 +4,17 @@
 // - Authorization: Bearer <Firebase ID Token>
 // - retry automático em 401 (força refresh do token e tenta 1x de novo)
 // - Exceptions tipadas (401/403/erros gerais) para a UI tratar
+//
+// Ajustes para "ACK ponta-a-ponta":
+// - Mantém sendCommand(...) retornando bool (compatibilidade com UI atual)
+// - Adiciona sendCommandWithAck(...) que retorna commandId (para correlacionar com ACK no Firestore)
+// - Adiciona watchAckForCommand(...) para acompanhar ACK por command_id (stream)
 
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
@@ -17,6 +25,44 @@ class HistoryResponse {
   final List<TelemetryModel> items;
   final String? nextToken;
   HistoryResponse({required this.items, this.nextToken});
+}
+
+/// Resultado do envio de comando com commandId (para E2E ACK).
+class SendCommandResult {
+  final bool ok;
+  final String commandId;
+  final String message;
+
+  SendCommandResult({
+    required this.ok,
+    required this.commandId,
+    required this.message,
+  });
+
+  @override
+  String toString() => 'SendCommandResult(ok=$ok, commandId=$commandId, message=$message)';
+}
+
+/// Snapshot simples de ACK (normalizado do Firestore).
+class AckEvent {
+  final String commandId;
+  final String status; // received|started|done|error|unknown
+  final String? action;
+  final int? duration;
+  final String? reason;
+  final DateTime timestamp;
+
+  AckEvent({
+    required this.commandId,
+    required this.status,
+    required this.timestamp,
+    this.action,
+    this.duration,
+    this.reason,
+  });
+
+  @override
+  String toString() => 'AckEvent(cmd=$commandId, status=$status, ts=$timestamp)';
 }
 
 /// Erro genérico da API (HTTP != 200)
@@ -50,6 +96,9 @@ class AwsService {
   final String _commandUrl =
       "https://r6rky7wzx6.execute-api.us-east-2.amazonaws.com/prod/command";
 
+  // Firestore (para acompanhar ACK)
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
   // ----------------------------
   // Helpers: token + headers
   // ----------------------------
@@ -71,10 +120,9 @@ class AwsService {
   Future<Map<String, String>> _buildHeaders({bool forceRefresh = false}) async {
     final token = await _getFirebaseIdToken(forceRefresh: forceRefresh);
 
-    // Log seguro: mostra só os últimos 6 chars do token
-    debugPrint(
-      "[AUTH] Authorization header set (Bearer ****${token.substring(token.length - 6)})",
-    );
+    // Log seguro: mostra só os últimos chars do token (evita crash se token < 6)
+    final suffix = token.length > 6 ? token.substring(token.length - 6) : token;
+    debugPrint("[AUTH] Authorization header set (Bearer ****$suffix)");
 
     return <String, String>{
       "Content-Type": "application/json",
@@ -205,24 +253,54 @@ class AwsService {
   }
 
   // ===========================================================================
-  // COMMAND
+  // COMMAND (compat + E2E ACK)
   // ===========================================================================
+
+  /// Gera um command_id no app (caso a API não gere ou para correlacionar com ACK).
+  String _generateCommandId() {
+    final ms = DateTime.now().millisecondsSinceEpoch;
+    final r = Random().nextInt(1 << 20);
+    return "app-$ms-$r";
+  }
 
   /// Envia comando para a válvula (device_id + action + duration)
   ///
-  /// Retorna `true` se a API respondeu 200.
-  /// Para erros:
-  /// - 401 -> lança UnauthorizedException
-  /// - 403 -> lança ForbiddenException
-  /// - outros -> lança ApiException
+  /// Compatibilidade com a UI atual: retorna bool.
+  /// Para E2E ACK, use sendCommandWithAck(...) abaixo.
   Future<bool> sendCommand(String deviceId, String action, int duration) async {
+    final result = await sendCommandWithAck(
+      deviceId: deviceId,
+      action: action,
+      duration: duration,
+      commandId: null, // gera automaticamente
+    );
+    return result.ok;
+  }
+
+  /// Versão "profissional": envia comando e retorna commandId para acompanhar ACK ponta-a-ponta.
+  ///
+  /// - Se commandId for null, gera um commandId no app.
+  /// - Envia esse commandId para a API Gateway.
+  /// - Tenta ler um command_id retornado pela API (se existir), mas mantém o do app como fallback.
+  Future<SendCommandResult> sendCommandWithAck({
+    required String deviceId,
+    required String action,
+    required int duration,
+    String? commandId,
+  }) async {
     final uri = Uri.parse(_commandUrl);
 
-    final body = json.encode({
+    final generated = commandId == null || commandId.isEmpty;
+    final cmdId = generated ? _generateCommandId() : commandId;
+
+    final bodyMap = <String, dynamic>{
       "device_id": deviceId,
       "action": action,
       "duration": duration,
-    });
+      "command_id": cmdId, // <<< IMPORTANTE PARA E2E ACK
+    };
+
+    final body = json.encode(bodyMap);
 
     debugPrint("Enviando comando para $deviceId: $body");
 
@@ -232,8 +310,26 @@ class AwsService {
       );
 
       if (res.statusCode == 200) {
-        debugPrint("Comando enviado com sucesso!");
-        return true;
+        // Se a API devolver JSON com command_id, ótimo; se não, usamos cmdId
+        String finalCmdId = cmdId;
+        String message = "Comando enviado com sucesso.";
+
+        try {
+          final decoded = json.decode(res.body);
+          if (decoded is Map) {
+            if (decoded["command_id"] is String && (decoded["command_id"] as String).isNotEmpty) {
+              finalCmdId = decoded["command_id"] as String;
+            }
+            if (decoded["message"] is String && (decoded["message"] as String).isNotEmpty) {
+              message = decoded["message"] as String;
+            }
+          }
+        } catch (_) {
+          // body pode não ser JSON
+        }
+
+        debugPrint("Comando enviado OK. command_id=$finalCmdId (generated=$generated)");
+        return SendCommandResult(ok: true, commandId: finalCmdId, message: message);
       }
 
       _throwForStatus(res, defaultMessage: "Falha ao enviar comando.");
@@ -242,6 +338,112 @@ class AwsService {
       rethrow;
     }
 
-    return false; // unreachable
+    // unreachable
+  }
+
+  // ===========================================================================
+  // ACK (Firestore) — acompanhar por command_id
+  // ===========================================================================
+
+  /// Stream que emite ACKs do Firestore para um command_id específico.
+  ///
+  /// Espera que a Lambda grave em:
+  ///   devices/{deviceId}/history
+  ///
+  /// E que os docs tenham (ideal):
+  /// - type: "ack"
+  /// - command_id: "{id}"
+  /// - status: "received|started|done|error"
+  /// - timestamp: Timestamp
+  ///
+  /// Observação:
+  /// - Não colocamos orderBy aqui para evitar necessidade de índice composto.
+  /// - Se houver múltiplos docs para o mesmo command_id, você pode tratar no UI (ex.: pegar o mais recente).
+  Stream<List<AckEvent>> watchAckForCommand({
+    required String deviceId,
+    required String commandId,
+    int limit = 20,
+  }) {
+    final col = _firestore
+        .collection('devices')
+        .doc(deviceId)
+        .collection('history');
+
+    final q = col
+        .where('command_id', isEqualTo: commandId)
+        .limit(limit);
+
+    return q.snapshots().map((snap) {
+      final events = <AckEvent>[];
+      for (final doc in snap.docs) {
+        final data = doc.data();
+
+        final status = (data['status'] ?? 'unknown').toString();
+        final action = data['action']?.toString();
+        final duration = (data['duration'] is num) ? (data['duration'] as num).toInt() : null;
+        final reason = data['reason']?.toString();
+
+        DateTime ts = DateTime.fromMillisecondsSinceEpoch(0);
+        final rawTs = data['timestamp'];
+        if (rawTs is Timestamp) {
+          ts = rawTs.toDate();
+        } else if (rawTs is String) {
+          // fallback (se alguém gravar string)
+          ts = DateTime.tryParse(rawTs) ?? ts;
+        }
+
+        events.add(AckEvent(
+          commandId: commandId,
+          status: status,
+          action: action,
+          duration: duration,
+          reason: reason,
+          timestamp: ts,
+        ));
+      }
+
+      // Ordena localmente (mais recente primeiro), já que evitamos orderBy no Firestore
+      events.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      return events;
+    });
+  }
+
+  /// Helper simples para aguardar até aparecer um ACK "done" ou "error".
+  /// (Útil para futura UI: mostrar “executado” sem precisar do usuário abrir o histórico)
+  Future<AckEvent?> waitForFinalAck({
+    required String deviceId,
+    required String commandId,
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final completer = Completer<AckEvent?>();
+    StreamSubscription<List<AckEvent>>? sub;
+
+    Timer? timer;
+    timer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        completer.complete(null);
+      }
+      sub?.cancel();
+    });
+
+    sub = watchAckForCommand(deviceId: deviceId, commandId: commandId).listen((events) {
+      for (final e in events) {
+        final st = e.status.toLowerCase();
+        if (st == 'done' || st == 'error') {
+          if (!completer.isCompleted) {
+            completer.complete(e);
+          }
+          timer?.cancel();
+          sub?.cancel();
+          break;
+        }
+      }
+    }, onError: (err) {
+      if (!completer.isCompleted) completer.completeError(err);
+      timer?.cancel();
+      sub?.cancel();
+    });
+
+    return completer.future;
   }
 }

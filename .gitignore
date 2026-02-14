@@ -28,3 +28,7 @@ firmware/include/secrets.h
 _context_bundle/
 agrosmart_context_bundle.tar.gz
 repo_tree.txt
+
+# Firmware dev artifacts
+firmware/.vscode/
+firmware/compile_commands.json

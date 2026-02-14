@@ -1223,7 +1223,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
         }
       });
     } catch (e) {
-      print('Erro ao buscar logs: $e');
+      debugPrint('Erro ao buscar logs: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -1481,7 +1481,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
 
           return ListTile(
             leading: CircleAvatar(
-              backgroundColor: _getTypeColor(log).withOpacity(0.2),
+              backgroundColor: _getTypeColor(log).withAlpha(51), // 0.2 * 255 ≈ 51
               child: Icon(_getTypeIcon(log), color: _getTypeColor(log)),
             ),
             title: Text(log.message),
