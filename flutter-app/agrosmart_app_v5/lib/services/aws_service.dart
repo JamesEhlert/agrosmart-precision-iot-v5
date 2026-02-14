@@ -8,7 +8,8 @@
 // Ajustes para "ACK ponta-a-ponta":
 // - Mantém sendCommand(...) retornando bool (compatibilidade com UI atual)
 // - Adiciona sendCommandWithAck(...) que retorna commandId (para correlacionar com ACK no Firestore)
-// - Adiciona watchAckForCommand(...) para acompanhar ACK por command_id (stream)
+// - Adiciona watchCommandStateForAck(...) (RECOMENDADO) para acompanhar ACK por command_id (doc único)
+// - Mantém watchAckHistoryForCommand(...) para timeline (history) e debug
 
 import 'dart:async';
 import 'dart:convert';
@@ -50,6 +51,7 @@ class AckEvent {
   final String? action;
   final int? duration;
   final String? reason;
+  final String? error;
   final DateTime timestamp;
 
   AckEvent({
@@ -59,6 +61,7 @@ class AckEvent {
     this.action,
     this.duration,
     this.reason,
+    this.error,
   });
 
   @override
@@ -317,10 +320,12 @@ class AwsService {
         try {
           final decoded = json.decode(res.body);
           if (decoded is Map) {
-            if (decoded["command_id"] is String && (decoded["command_id"] as String).isNotEmpty) {
+            if (decoded["command_id"] is String &&
+                (decoded["command_id"] as String).isNotEmpty) {
               finalCmdId = decoded["command_id"] as String;
             }
-            if (decoded["message"] is String && (decoded["message"] as String).isNotEmpty) {
+            if (decoded["message"] is String &&
+                (decoded["message"] as String).isNotEmpty) {
               message = decoded["message"] as String;
             }
           }
@@ -337,29 +342,112 @@ class AwsService {
       debugPrint("Exceção no envio de comando: $e");
       rethrow;
     }
-
-    // unreachable
   }
 
   // ===========================================================================
   // ACK (Firestore) — acompanhar por command_id
   // ===========================================================================
 
-  /// Stream que emite ACKs do Firestore para um command_id específico.
+  String _normalizeStatus(dynamic raw) {
+    if (raw == null) return "unknown";
+    final s = raw.toString().trim().toLowerCase();
+    if (s == "received" || s == "started" || s == "done" || s == "error") {
+      return s;
+    }
+    return s.isEmpty ? "unknown" : s;
+  }
+
+  DateTime _parseTimestamp(dynamic raw) {
+    if (raw is Timestamp) return raw.toDate();
+    if (raw is String) return DateTime.tryParse(raw) ?? DateTime.fromMillisecondsSinceEpoch(0);
+    return DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  /// ✅ RECOMENDADO (E2E):
+  /// Escuta o documento de estado do comando:
+  ///   devices/{deviceId}/commands/{commandId}
   ///
-  /// Espera que a Lambda grave em:
-  ///   devices/{deviceId}/history
+  /// Espera campos criados pela Lambda:
+  /// - last_status
+  /// - last_status_at (Timestamp)
+  /// - action, duration, reason, error (opcionais)
+  Stream<AckEvent?> watchCommandStateForAck({
+    required String deviceId,
+    required String commandId,
+  }) {
+    final docRef = _firestore
+        .collection('devices')
+        .doc(deviceId)
+        .collection('commands')
+        .doc(commandId);
+
+    return docRef.snapshots().map((snap) {
+      if (!snap.exists) return null;
+
+      final data = snap.data();
+      if (data == null) return null;
+
+      final status = _normalizeStatus(data['last_status']);
+      final action = data['action']?.toString();
+      final duration = (data['duration'] is num) ? (data['duration'] as num).toInt() : null;
+      final reason = data['reason']?.toString();
+      final error = data['error']?.toString();
+
+      final ts = _parseTimestamp(data['last_status_at']);
+
+      return AckEvent(
+        commandId: commandId,
+        status: status,
+        timestamp: ts,
+        action: action,
+        duration: duration,
+        reason: reason,
+        error: error,
+      );
+    });
+  }
+
+  /// Aguarda até aparecer um ACK final ("done" ou "error") no doc commands/`commandId`.
+  Future<AckEvent?> waitForFinalAckFromCommandState({
+    required String deviceId,
+    required String commandId,
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final completer = Completer<AckEvent?>();
+    StreamSubscription<AckEvent?>? sub;
+
+    Timer? timer;
+    timer = Timer(timeout, () {
+      if (!completer.isCompleted) completer.complete(null);
+      sub?.cancel();
+    });
+
+    sub = watchCommandStateForAck(deviceId: deviceId, commandId: commandId).listen(
+      (event) {
+        if (event == null) return;
+        final st = event.status.toLowerCase();
+        if (st == 'done' || st == 'error') {
+          if (!completer.isCompleted) completer.complete(event);
+          timer?.cancel();
+          sub?.cancel();
+        }
+      },
+      onError: (err) {
+        if (!completer.isCompleted) completer.completeError(err);
+        timer?.cancel();
+        sub?.cancel();
+      },
+    );
+
+    return completer.future;
+  }
+
+  /// (Timeline/Debug)
+  /// Stream que emite eventos de ACK no history para um command_id.
   ///
-  /// E que os docs tenham (ideal):
-  /// - type: "ack"
-  /// - command_id: "{id}"
-  /// - status: "received|started|done|error"
-  /// - timestamp: Timestamp
-  ///
-  /// Observação:
-  /// - Não colocamos orderBy aqui para evitar necessidade de índice composto.
-  /// - Se houver múltiplos docs para o mesmo command_id, você pode tratar no UI (ex.: pegar o mais recente).
-  Stream<List<AckEvent>> watchAckForCommand({
+  /// Útil para “Eventos”, auditoria e debug.
+  /// Para E2E ACK e UX, prefira watchCommandStateForAck().
+  Stream<List<AckEvent>> watchAckHistoryForCommand({
     required String deviceId,
     required String commandId,
     int limit = 20,
@@ -378,19 +466,13 @@ class AwsService {
       for (final doc in snap.docs) {
         final data = doc.data();
 
-        final status = (data['status'] ?? 'unknown').toString();
+        final status = _normalizeStatus(data['status']);
         final action = data['action']?.toString();
         final duration = (data['duration'] is num) ? (data['duration'] as num).toInt() : null;
         final reason = data['reason']?.toString();
+        final error = data['error']?.toString();
 
-        DateTime ts = DateTime.fromMillisecondsSinceEpoch(0);
-        final rawTs = data['timestamp'];
-        if (rawTs is Timestamp) {
-          ts = rawTs.toDate();
-        } else if (rawTs is String) {
-          // fallback (se alguém gravar string)
-          ts = DateTime.tryParse(rawTs) ?? ts;
-        }
+        final ts = _parseTimestamp(data['timestamp']);
 
         events.add(AckEvent(
           commandId: commandId,
@@ -398,18 +480,29 @@ class AwsService {
           action: action,
           duration: duration,
           reason: reason,
+          error: error,
           timestamp: ts,
         ));
       }
 
-      // Ordena localmente (mais recente primeiro), já que evitamos orderBy no Firestore
+      // Ordena localmente (mais recente primeiro)
       events.sort((a, b) => b.timestamp.compareTo(a.timestamp));
       return events;
     });
   }
 
-  /// Helper simples para aguardar até aparecer um ACK "done" ou "error".
-  /// (Útil para futura UI: mostrar “executado” sem precisar do usuário abrir o histórico)
+  /// Mantém compatibilidade com seu nome antigo (se alguma tela já usa).
+  /// (Opcional: você pode remover depois que migrar tudo)
+  Stream<List<AckEvent>> watchAckForCommand({
+    required String deviceId,
+    required String commandId,
+    int limit = 20,
+  }) {
+    return watchAckHistoryForCommand(deviceId: deviceId, commandId: commandId, limit: limit);
+  }
+
+  /// Helper antigo (baseado no history). Mantido por compatibilidade.
+  /// Para UX melhor, prefira waitForFinalAckFromCommandState().
   Future<AckEvent?> waitForFinalAck({
     required String deviceId,
     required String commandId,
@@ -426,7 +519,7 @@ class AwsService {
       sub?.cancel();
     });
 
-    sub = watchAckForCommand(deviceId: deviceId, commandId: commandId).listen((events) {
+    sub = watchAckHistoryForCommand(deviceId: deviceId, commandId: commandId).listen((events) {
       for (final e in events) {
         final st = e.status.toLowerCase();
         if (st == 'done' || st == 'error') {

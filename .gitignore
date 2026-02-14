@@ -32,3 +32,6 @@ repo_tree.txt
 # Firmware dev artifacts
 firmware/.vscode/
 firmware/compile_commands.json
+
+# Private docs (do not commit)
+docs/private/
