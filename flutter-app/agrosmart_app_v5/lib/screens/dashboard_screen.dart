@@ -30,6 +30,10 @@ import 'weather_screen.dart';
 const int refreshIntervalSeconds = 30;
 const int offlineThresholdMinutes = 12;
 
+// Timeout curto só para confirmar entrega do comando via ACK (received/started)
+// Não esperamos "done" porque irrigação pode durar minutos.
+const Duration ackDeliveryTimeout = Duration(seconds: 10);
+
 // ============================================================================
 // MAIN DASHBOARD
 // ============================================================================
@@ -483,6 +487,51 @@ class _MonitorTabState extends State<_MonitorTab> {
     _remainingSeconds = 0;
   }
 
+  // ===========================================================================
+  // NOVO: ACK Delivery (E2E)
+  // - Aguardamos somente "received" ou "started" para confirmar entrega do comando.
+  // - Não esperamos "done" porque pode demorar minutos (e travaria UX).
+  // ===========================================================================
+  Future<AckEvent?> _waitForAckDelivery({
+    required String deviceId,
+    required String commandId,
+    Duration timeout = ackDeliveryTimeout,
+  }) async {
+    final completer = Completer<AckEvent?>();
+    StreamSubscription<AckEvent?>? sub;
+
+    Timer? timer;
+    timer = Timer(timeout, () {
+      if (!completer.isCompleted) completer.complete(null);
+      sub?.cancel();
+    });
+
+    sub = _awsService.watchCommandStateForAck(
+      deviceId: deviceId,
+      commandId: commandId,
+    ).listen((ack) {
+      if (ack == null) return;
+      final st = ack.status.toLowerCase();
+      if (st == 'received' || st == 'started') {
+        if (!completer.isCompleted) completer.complete(ack);
+        timer?.cancel();
+        sub?.cancel();
+      }
+      if (st == 'error') {
+        // Se já veio error, também encerramos e devolvemos o erro.
+        if (!completer.isCompleted) completer.complete(ack);
+        timer?.cancel();
+        sub?.cancel();
+      }
+    }, onError: (err) {
+      if (!completer.isCompleted) completer.completeError(err);
+      timer?.cancel();
+      sub?.cancel();
+    });
+
+    return completer.future;
+  }
+
   // Estado para o Card de Clima
   Map<String, dynamic>? _weatherSummary;
   bool _loadingWeather = false;
@@ -599,48 +648,120 @@ class _MonitorTabState extends State<_MonitorTab> {
 
     final int durationSeconds = minutes * 60;
 
-    final success = await _awsService.sendCommand(widget.device.id, "on", durationSeconds);
+    // 1) Envia comando retornando commandId (E2E)
+    final result = await _awsService.sendCommandWithAck(
+      deviceId: widget.device.id,
+      action: "on",
+      duration: durationSeconds,
+      commandId: null,
+    );
 
     if (!mounted) return;
 
-    if (success) {
-      final until = DateTime.now().add(Duration(seconds: durationSeconds));
-      _irrigationUntilMemory[widget.device.id] = until;
-
-      setState(() {
-        _irrigationUntil = until;
-        _remainingSeconds = durationSeconds;
-      });
-
-      _startCountdownTo(until);
-
+    if (!result.ok) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("✅ Irrigação iniciada por $minutes min"),
-          backgroundColor: Colors.green,
+        const SnackBar(content: Text("❌ Falha no comando."), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    // 2) Aguarda ACK rápido de entrega (received/started)
+    final ack = await _waitForAckDelivery(
+      deviceId: widget.device.id,
+      commandId: result.commandId,
+    );
+
+    if (!mounted) return;
+
+    // Se veio error, não inicia contador
+    if (ack != null && ack.status.toLowerCase() == 'error') {
+      final errMsg = (ack.error != null && ack.error!.isNotEmpty) ? ack.error! : "Falha reportada pelo dispositivo.";
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ Erro no dispositivo: $errMsg"), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    // 3) Se não veio ACK em 10s, ainda assim podemos iniciar o contador (com aviso),
+    // pois a API pode ter enviado e o ACK só não chegou ainda.
+    if (ack == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("⚠️ Comando enviado, aguardando ACK do dispositivo..."),
+          backgroundColor: Colors.orange,
         ),
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("❌ Falha no comando."), backgroundColor: Colors.red),
+        SnackBar(
+          content: Text("✅ Dispositivo confirmou: ACK ${ack.status}"),
+          backgroundColor: Colors.green,
+        ),
       );
     }
+
+    // 4) Inicia o contador local
+    final until = DateTime.now().add(Duration(seconds: durationSeconds));
+    _irrigationUntilMemory[widget.device.id] = until;
+
+    setState(() {
+      _irrigationUntil = until;
+      _remainingSeconds = durationSeconds;
+    });
+
+    _startCountdownTo(until);
   }
 
   Future<void> _stopManualIrrigation() async {
-    // STOP imediato: API aceita apenas action "on", então paramos com duration=0
-    final success = await _awsService.sendCommand(widget.device.id, "on", 0);
+    // STOP imediato: mantendo compatibilidade (action "on" + duration=0)
+    // (Se você quiser migrar futuramente para action "off", dá pra ajustar depois.)
+    final result = await _awsService.sendCommandWithAck(
+      deviceId: widget.device.id,
+      action: "on",
+      duration: 0,
+      commandId: null,
+    );
 
     if (!mounted) return;
 
-    if (success) {
-      setState(() => _clearIrrigationForCurrentDevice());
+    if (!result.ok) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("⏹️ Irrigação parada!"), backgroundColor: Colors.orange),
+        const SnackBar(content: Text("❌ Falha ao parar irrigação."), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    final ack = await _waitForAckDelivery(
+      deviceId: widget.device.id,
+      commandId: result.commandId,
+    );
+
+    if (!mounted) return;
+
+    if (ack != null && ack.status.toLowerCase() == 'error') {
+      final errMsg = (ack.error != null && ack.error!.isNotEmpty) ? ack.error! : "Falha reportada pelo dispositivo.";
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ Erro no dispositivo: $errMsg"), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    // Paramos o contador local (mesmo se ack não chegou ainda)
+    setState(() => _clearIrrigationForCurrentDevice());
+
+    if (ack == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("⏹️ Comando de parada enviado (aguardando ACK)..."),
+          backgroundColor: Colors.orange,
+        ),
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("❌ Falha ao parar irrigação."), backgroundColor: Colors.red),
+        SnackBar(
+          content: Text("⏹️ Parada confirmada: ACK ${ack.status}"),
+          backgroundColor: Colors.orange,
+        ),
       );
     }
   }
@@ -1127,7 +1248,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
 
   // Chips / filtros no topo
   String _mainFilter = 'all'; // all | schedule | ack
-  String _ackFilter = 'all';  // all | received | started | done | error
+  String _ackFilter = 'all'; // all | received | started | done | error
 
   @override
   void initState() {
@@ -1223,7 +1344,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
         }
       });
     } catch (e) {
-      print('Erro ao buscar logs: $e');
+      debugPrint('Erro ao buscar logs: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -1326,9 +1447,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
 
     Widget ackChip(String st, String label) {
       final selected = _ackFilter == st;
-      final count = st == 'all'
-          ? ackTotal
-          : (ackCounts[st] ?? 0);
+      final count = st == 'all' ? ackTotal : (ackCounts[st] ?? 0);
       return ChoiceChip(
         selected: selected,
         label: Text('$label ($count)'),
@@ -1481,7 +1600,7 @@ class _EventsLogViewState extends State<_EventsLogView> {
 
           return ListTile(
             leading: CircleAvatar(
-              backgroundColor: _getTypeColor(log).withOpacity(0.2),
+              backgroundColor: _getTypeColor(log).withAlpha(51), // 0.2 * 255 ≈ 51
               child: Icon(_getTypeIcon(log), color: _getTypeColor(log)),
             ),
             title: Text(log.message),

@@ -4,12 +4,13 @@
  * ===================================================================================
  * AUTOR: James Rafael Ehlert
  * DATA: 11/02/2026
- * VERSÃO: 5.17.3 (SD crash-safe store-and-forward + debug profundo)
+ * VERSÃO: 5.17.4 (device-scoped topics + ACK ponta-a-ponta + SD crash-safe)
  * ===================================================================================
  *
  * MOTIVAÇÃO
  * - Corrigir perda de dados no flush do SD (reset/WDT ou falha de I/O no meio da compactação)
  * - Melhorar diagnósticos de MQTT publish falhando (buffer PubSubClient, estado MQTT/TLS)
+ * - Evoluir para "produto": tópicos MQTT por dispositivo + ACK ponta-a-ponta
  *
  * PRINCIPAIS MELHORIAS (RESUMO)
  *  1) Store-and-forward NDJSON append-only (cada amostra offline vira 1 linha)
@@ -18,6 +19,10 @@
  *  4) SD protegido por mutex + loops com vTaskDelay/yield (mitiga WDT)
  *  5) PubSubClient com buffer maior + publish com length + logs detalhados (state, TLS, buffer)
  *  6) Telemetry_id estável (device_id + timestamp + seq) e seq persistida em NVS
+ *  7) MQTT topics por dispositivo:
+ *     - agrosmart/v5/<THINGNAME>/telemetry
+ *     - agrosmart/v5/<THINGNAME>/command
+ *     - agrosmart/v5/<THINGNAME>/ack
  *
  * OBS IMPORTANTES
  * - A telemetria é publicada em MQTT (AWS IoT Core). Uma IoT Rule grava no DynamoDB.
@@ -54,7 +59,7 @@
 // BUILD FLAGS / DEFAULTS (definidos no platformio.ini via build_flags)
 // ===================================================================================
 #ifndef FW_VERSION
-  #define FW_VERSION "5.17.3"
+  #define FW_VERSION "5.17.4"
 #endif
 
 #ifndef DEFAULT_TELEMETRY_INTERVAL_MS
@@ -79,6 +84,26 @@
 #ifndef TELEMETRY_SCHEMA_VERSION
   #define TELEMETRY_SCHEMA_VERSION 1
 #endif
+
+// ===================================================================================
+// MQTT TOPICS POR DISPOSITIVO (produto)
+// ===================================================================================
+// Prefixo base. Se você quiser, pode definir no secrets.h:
+//   #define AGROSMART_TOPIC_PREFIX "agrosmart/v5"
+#ifndef AGROSMART_TOPIC_PREFIX
+  #define AGROSMART_TOPIC_PREFIX "agrosmart/v5"
+#endif
+
+static char g_topicTelemetry[128];
+static char g_topicCommand[128];
+static char g_topicAck[128];
+
+static void buildMqttTopics() {
+  // agrosmart/v5/<THINGNAME>/telemetry|command|ack
+  snprintf(g_topicTelemetry, sizeof(g_topicTelemetry), "%s/%s/telemetry", AGROSMART_TOPIC_PREFIX, THINGNAME);
+  snprintf(g_topicCommand,   sizeof(g_topicCommand),   "%s/%s/command",   AGROSMART_TOPIC_PREFIX, THINGNAME);
+  snprintf(g_topicAck,       sizeof(g_topicAck),       "%s/%s/ack",       AGROSMART_TOPIC_PREFIX, THINGNAME);
+}
 
 // ===================================================================================
 // LOG HELPERS
@@ -145,12 +170,7 @@ static const uint32_t PENDING_FLUSH_MAX_MS_DEFAULT       = 8000;
 
 // MQTT
 static const uint16_t MQTT_PORT = 8883;
-static const uint16_t MQTT_BUFFER_SIZE = 2048; // <<<<<< CORREÇÃO PRINCIPAL p/ publish falhando por payload > 256
-
-// ACK de comandos (novo)
-#ifndef AWS_IOT_ACK_TOPIC
-  #define AWS_IOT_ACK_TOPIC "agrosmart/v5/ack"
-#endif
+static const uint16_t MQTT_BUFFER_SIZE = 2048; // publish com payload > 256
 
 // ===================================================================================
 // 2) ESTRUTURAS
@@ -268,6 +288,7 @@ static void cfgSet(const RuntimeConfig& c) {
 static void printConfig() {
   RuntimeConfig c = cfgGet();
   LOGI("FW=%s | THING=%s | schema=%d", FW_VERSION, THINGNAME, TELEMETRY_SCHEMA_VERSION);
+  LOGI("[MQTT] telemetry=%s | command=%s | ack=%s", g_topicTelemetry, g_topicCommand, g_topicAck);
   LOGI("[NVS] tele_int=%lu ms, soil(dry=%d wet=%d), seq=%lu, pend_off=%lu",
        (unsigned long)c.telemetry_interval_ms, c.soil_raw_dry, c.soil_raw_wet,
        (unsigned long)g_telemetrySeq, (unsigned long)g_pendingOffset);
@@ -458,7 +479,6 @@ struct has_lastError {
 
 template <typename ClientT>
 static void logTlsLastError_impl(ClientT& c, std::true_type) {
-  // arduino-esp32 expõe lastError(buf, size) (mbedTLS) — diferente de getLastSSLError (BearSSL/Arduino-Pico/ESP8266)
   char buf[256] = {0};
   int err = c.lastError(buf, sizeof(buf));
   if (err != 0 || buf[0] != '\0') {
@@ -475,7 +495,6 @@ static void logTlsLastError_impl(ClientT& c, std::true_type) {
 
 template <typename ClientT>
 static void logTlsLastError_impl(ClientT& c, std::false_type) {
-  // Core/versão sem API pública para o erro TLS
   int we = c.getWriteError();
   LOGW("[TLS] API lastError() indisponível neste core. writeError=%d", we);
 }
@@ -484,7 +503,6 @@ static void logTlsLastError() {
   logTlsLastError_impl(net, std::integral_constant<bool, has_lastError<WiFiClientSecure>::value>{});
 }
 
-
 static bool mqttPublish(const char* topic, const uint8_t* payload, uint32_t len, bool retained=false) {
   if (!g_mqttConnected || !client.connected()) {
     LOGW("[AWS] publish skip (mqttConnected=%d client.connected=%d)", (int)g_mqttConnected, (int)client.connected());
@@ -492,7 +510,7 @@ static bool mqttPublish(const char* topic, const uint8_t* payload, uint32_t len,
   }
 
   uint16_t bufSz = client.getBufferSize();
-  if (len + 10 > bufSz) { // folga
+  if (len + 10 > bufSz) {
     LOGE("[AWS] payload len=%lu > PubSubClient buffer=%u. AUMENTE MQTT_BUFFER_SIZE!", (unsigned long)len, (unsigned)bufSz);
     return false;
   }
@@ -515,7 +533,6 @@ static bool mqttPublish(const char* topic, const uint8_t* payload, uint32_t len,
 static DateTime getSystemTime(); // forward declaration (definido na seção TIME)
 
 static uint32_t epochNow() {
-  // Usa RTC (atualizado por NTP quando possível). Best-effort: se RTC falhar, cai para 0.
   DateTime nowUTC = getSystemTime();
   return nowUTC.unixtime();
 }
@@ -562,13 +579,14 @@ static bool publishCommandAck(const char* commandId,
     return false;
   }
 
-  // ArduinoJson pode adicionar  ao final do buffer; evitar enviar bytes nulos no MQTT
   if (outLen > 0 && out[outLen - 1] == '\0') {
     outLen--;
   }
 
-  bool ok = mqttPublish(AWS_IOT_ACK_TOPIC, (const uint8_t*)out, (uint32_t)outLen, false);
-  LOGI("[ACK] status=%s cmd=%s ok=%d", status, commandId, (int)ok);
+  // >>> AGORA PUBLICA NO TÓPICO POR DISPOSITIVO:
+  // agrosmart/v5/<THINGNAME>/ack
+  bool ok = mqttPublish(g_topicAck, (const uint8_t*)out, (uint32_t)outLen, false);
+  LOGI("[ACK] status=%s cmd=%s ok=%d topic=%s", status, commandId, (int)ok, g_topicAck);
   return ok;
 }
 
@@ -576,12 +594,10 @@ static bool publishCommandAck(const char* commandId,
 // 8) TELEMETRY PAYLOAD (JSON)
 // ===================================================================================
 static void makeTelemetryId(char* out, size_t outSz, uint32_t ts, uint32_t seq) {
-  // Ex: ESP32-AgroSmart-Station-V5:1700000000:42
   snprintf(out, outSz, "%s:%lu:%lu", THINGNAME, (unsigned long)ts, (unsigned long)seq);
 }
 
 static bool buildTelemetryJson(const TelemetryData& d, char* out, size_t outSz, uint32_t& outLen) {
-  // Doc maior (por causa de sys.*)
   StaticJsonDocument<1024> doc;
 
   doc["device_id"] = THINGNAME;
@@ -607,7 +623,6 @@ static bool buildTelemetryJson(const TelemetryData& d, char* out, size_t outSz, 
   sys["heap"] = (uint32_t)esp_get_free_heap_size();
   if (g_wifiConnected) sys["rssi"] = WiFi.RSSI();
 
-  // stats da fila pendente (best effort)
   uint32_t pendSz = sdFileSize(PENDING_FILENAME);
   sys["pending_bytes"] = pendSz;
   sys["pending_off"] = g_pendingOffset;
@@ -637,7 +652,6 @@ static bool sdAppendPendingLine(const char* line, uint32_t len) {
     return false;
   }
 
-  // limite de tamanho antes de escrever
   uint32_t sizeBefore = 0;
   File s = SD.open(PENDING_FILENAME, FILE_READ);
   if (s) { sizeBefore = (uint32_t)s.size(); s.close(); }
@@ -671,7 +685,6 @@ static bool sdAppendPendingLine(const char* line, uint32_t len) {
   return true;
 }
 
-// Lê 1 linha a partir de offset. Retorna nextOffset e fileSize. Abre/fecha o arquivo para manter SD thread-safe.
 static bool sdReadPendingLine(uint32_t offset, String& outLine, uint32_t& nextOffset, uint32_t& fileSize) {
   outLine = "";
   nextOffset = offset;
@@ -706,8 +719,7 @@ static bool sdReadPendingLine(uint32_t offset, String& outLine, uint32_t& nextOf
   f.close();
   unlockSem(sdMutex);
 
-  // remove \r
-  outLine.trim(); // remove espaços e \r
+  outLine.trim();
   nextOffset = posAfter;
 
   if (outLine.length() == 0) {
@@ -739,7 +751,6 @@ static bool sdCompactPendingFile(uint32_t keepFromOffset) {
 
   uint32_t size = (uint32_t)src.size();
   if (keepFromOffset >= size) {
-    // nada a manter => remove arquivo
     src.close();
     SD.remove(PENDING_FILENAME);
     unlockSem(sdMutex);
@@ -767,21 +778,19 @@ static bool sdCompactPendingFile(uint32_t keepFromOffset) {
   while (src.available()) {
     int r = src.read(buf, sizeof(buf));
     if (r > 0) tmp.write(buf, r);
-    vTaskDelay(1); // mitiga WDT
+    vTaskDelay(1);
   }
 
   tmp.flush();
   tmp.close();
   src.close();
 
-  // TMP + BAK + rename (crash-safe)
   SD.remove(PENDING_BAK_FILENAME);
   bool ok1 = SD.rename(PENDING_FILENAME, PENDING_BAK_FILENAME);
   bool ok2 = SD.rename(PENDING_TMP_FILENAME, PENDING_FILENAME);
 
   if (!ok1 || !ok2) {
     LOGE("[SD][COMPACT] rename falhou (ok1=%d ok2=%d). Tentando recovery...", (int)ok1, (int)ok2);
-    // tentar reverter
     if (SD.exists(PENDING_BAK_FILENAME) && !SD.exists(PENDING_FILENAME)) {
       SD.rename(PENDING_BAK_FILENAME, PENDING_FILENAME);
     }
@@ -808,7 +817,6 @@ static void pendingFlushTick() {
   if (!timeReached(now, lastFlushMs + c.pending_flush_every_ms)) return;
   lastFlushMs = now;
 
-  // nada pendente?
   uint32_t fileSize = sdFileSize(PENDING_FILENAME);
   if (fileSize == 0 || g_pendingOffset >= fileSize) return;
 
@@ -828,24 +836,23 @@ static void pendingFlushTick() {
     bool okRead = sdReadPendingLine(g_pendingOffset, line, nextOff, sz);
     if (!okRead) break;
 
-    // publish fora do mutex do SD
     const uint8_t* p = (const uint8_t*)line.c_str();
     uint32_t len = (uint32_t)line.length();
 
-    bool okPub = mqttPublish(AWS_IOT_PUBLISH_TOPIC, p, len, false);
+    // >>> PUBLICA NO TÓPICO POR DISPOSITIVO
+    bool okPub = mqttPublish(g_topicTelemetry, p, len, false);
     if (!okPub) {
       failures++;
       LOGW("[SD][FLUSH] publish falhou. Parando flush para tentar mais tarde.");
       break;
     }
 
-    // Avança offset SOMENTE após publish OK
     g_pendingOffset = nextOff;
     g_offDirty++;
     if (g_offDirty >= OFF_PERSIST_EVERY) persistOffsetIfNeeded(false);
 
     sent++;
-    vTaskDelay(1); // mitiga WDT e dá chance ao WiFi stack
+    vTaskDelay(1);
   }
 
   persistOffsetIfNeeded(true);
@@ -856,9 +863,7 @@ static void pendingFlushTick() {
        (unsigned long)g_pendingOffset, (unsigned long)sizeAfter,
        (unsigned long)(msNow() - start));
 
-  // Compactação quando offset cresce
   if (g_pendingOffset >= COMPACT_THRESHOLD_BYTES) {
-    // Recheca size
     uint32_t sz = sdFileSize(PENDING_FILENAME);
     if (sz > 0 && g_pendingOffset < sz) {
       bool okComp = sdCompactPendingFile(g_pendingOffset);
@@ -868,7 +873,6 @@ static void pendingFlushTick() {
         persistOffsetIfNeeded(true);
       }
     } else if (sz > 0 && g_pendingOffset >= sz) {
-      // tudo enviado -> remove
       if (lockSem(sdMutex, 1500)) {
         SD.remove(PENDING_FILENAME);
         unlockSem(sdMutex);
@@ -934,6 +938,12 @@ static void valveApplyCommand(bool turnOn, int32_t durationS) {
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   LOGI("[MQTT] msg topic=%s len=%u", topic, length);
 
+  // Segurança extra: só processa se veio do tópico do próprio device
+  if (strcmp(topic, g_topicCommand) != 0) {
+    LOGW("[MQTT] Ignorado: tópico não é o command deste device (%s)", g_topicCommand);
+    return;
+  }
+
   StaticJsonDocument<512> doc;
   DeserializationError err = deserializeJson(doc, payload, length);
   if (err) {
@@ -948,7 +958,7 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // 2) command_id + action: copiar campos ANTES de publicar ACK (PubSubClient reutiliza buffer RX)
+  // 2) command_id + action: copiar campos ANTES de publicar ACK
   char cmdLocal[48] = {0};
   char actionLocal[24] = {0};
 
@@ -956,12 +966,11 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (cmdIdRaw && cmdIdRaw[0] != '\0') {
     safeCopy(g_lastCommandId, sizeof(g_lastCommandId), cmdIdRaw);
   } else {
-    // fallback (não deveria ocorrer, pois a Lambda já gera command_id)
     snprintf(cmdLocal, sizeof(cmdLocal), "local-%lu", (unsigned long)msNow());
     safeCopy(g_lastCommandId, sizeof(g_lastCommandId), cmdLocal);
     LOGW("[MQTT] command_id ausente. Usando fallback=%s", g_lastCommandId);
   }
-  const char* cmdId = g_lastCommandId; // estável
+  const char* cmdId = g_lastCommandId;
 
   const char* actionRaw = doc["action"];
   if (actionRaw && actionRaw[0] != '\0') {
@@ -981,7 +990,7 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   const char* action = actionLocal;
 
-  // 3) ACK imediato: recebemos e validamos o comando
+  // 3) ACK imediato
   publishCommandAck(cmdId, "received", action, duration, nullptr, nullptr);
 
   // 4) aplica comando
@@ -1008,7 +1017,6 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
         publishCommandAck(cmdId, "error", action, duration, "valve_not_on", "valve_failed_to_start");
       }
     } else {
-      // compat: seu firmware tratava "on" com duration=0 como STOP
       LOGI("[COMANDO] STOP imediato (duration=0)");
       valveApplyCommand(false, 0);
 
@@ -1143,12 +1151,10 @@ static void taskSensors(void *pvParameters) {
     DateTime nowUTC = getSystemTime();
     data.timestamp = nowUTC.unixtime();
 
-    // seq e telemetry_id
     data.seq = ++g_telemetrySeq;
     g_seqDirty++;
     persistSeqIfNeeded(false);
 
-    // AHT10 (I2C protegido)
     if (lockSem(i2cMutex, I2C_MUTEX_WAIT_MS)) {
       sensors_event_t h, t;
       if (aht.getEvent(&h, &t)) {
@@ -1161,7 +1167,6 @@ static void taskSensors(void *pvParameters) {
       unlockSem(i2cMutex);
     }
 
-    // analógicos
     int rawSolo = analogRead(PIN_SOLO);
     data.soil_moisture = constrain(map(rawSolo, c.soil_raw_dry, c.soil_raw_wet, 0, 100), 0, 100);
 
@@ -1175,7 +1180,6 @@ static void taskSensors(void *pvParameters) {
     data.uv_index = (((somaUV / 16) * 3.3) / 4095.0) / 0.1;
     if (data.uv_index < 0.2) data.uv_index = 0.0;
 
-    // Debug detalhado
     DateTime nowBRT = DateTime(nowUTC.unixtime() + BRT_OFFSET_SEC);
     bool valveOn = false;
     if (lockSem(valveMutex, 10)) { valveOn = g_valveState; unlockSem(valveMutex); }
@@ -1188,7 +1192,6 @@ static void taskSensors(void *pvParameters) {
     LOGD("[SENSORS] UV=%.2f", data.uv_index);
     LOGD("[SENSORS] Válvula=%s", valveOn ? "ON" : "OFF");
 
-    // Atualiza display data
     if (lockSem(dataMutex, 100)) { g_latestData = data; unlockSem(dataMutex); }
 
     if (xQueueSend(sensorQueue, &data, 0) != pdPASS) {
@@ -1204,7 +1207,6 @@ static void taskSensors(void *pvParameters) {
 static void taskNetworkStorage(void *pvParameters) {
   (void)pvParameters;
 
-  // TLS/AWS
   net.setCACert(AWS_CERT_CA);
   net.setCertificate(AWS_CERT_CRT);
   net.setPrivateKey(AWS_CERT_PRIVATE);
@@ -1217,7 +1219,7 @@ static void taskNetworkStorage(void *pvParameters) {
   client.setSocketTimeout(10);
 
   LOGI("[AWS] PUB=%s | SUB=%s | ACK=%s | endpoint=%s:%u | buf=%u",
-       AWS_IOT_PUBLISH_TOPIC, AWS_IOT_SUBSCRIBE_TOPIC, AWS_IOT_ACK_TOPIC, AWS_IOT_ENDPOINT, MQTT_PORT, (unsigned)client.getBufferSize());
+       g_topicTelemetry, g_topicCommand, g_topicAck, AWS_IOT_ENDPOINT, MQTT_PORT, (unsigned)client.getBufferSize());
 
   BackoffState wifiB, mqttB;
   uint32_t lastNtpAttempt = 0;
@@ -1225,7 +1227,7 @@ static void taskNetworkStorage(void *pvParameters) {
   TelemetryData received{};
 
   for (;;) {
-    // 1) FAIL-SAFE válvula (wrap-safe) + ACK de término (timeout/failsafe)
+    // 1) FAIL-SAFE válvula + ACK de término (timeout/failsafe)
     bool doAck = false;
     bool ackIsError = false;
     char ackCmd[48] = {0};
@@ -1264,7 +1266,6 @@ static void taskNetworkStorage(void *pvParameters) {
       unlockSem(valveMutex);
     }
 
-    // publica ACK fora do mutex
     if (doAck && ackCmd[0] != '\0') {
       if (ackIsError) {
         publishCommandAck(ackCmd, "error", "off", 0, ackReason, "failsafe");
@@ -1272,7 +1273,6 @@ static void taskNetworkStorage(void *pvParameters) {
         publishCommandAck(ackCmd, "done", "off", 0, ackReason, nullptr);
       }
     }
-
 
     // 2) Wi-Fi
     if (WiFi.status() != WL_CONNECTED) {
@@ -1318,8 +1318,10 @@ static void taskNetworkStorage(void *pvParameters) {
             backoffReset(mqttB);
             g_mqttConnected = true;
             LOGI("[AWS] MQTT conectado. state=%d(%s)", client.state(), mqttStateName(client.state()));
-            bool subOk = client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
-            LOGI("[AWS] Subscribed: %s (ok=%d)", AWS_IOT_SUBSCRIBE_TOPIC, (int)subOk);
+
+            // >>> SUBSCRIBE NO TÓPICO POR DISPOSITIVO
+            bool subOk = client.subscribe(g_topicCommand);
+            LOGI("[AWS] Subscribed: %s (ok=%d)", g_topicCommand, (int)subOk);
           } else {
             int st = client.state();
             LOGE("[AWS] MQTT connect FAIL: state=%d(%s)", st, mqttStateName(st));
@@ -1340,7 +1342,6 @@ static void taskNetworkStorage(void *pvParameters) {
     if (xQueueReceive(sensorQueue, &received, pdMS_TO_TICKS(50)) == pdPASS) {
       LOGD("[NET] Processando telemetria ts=%lu seq=%lu", (unsigned long)received.timestamp, (unsigned long)received.seq);
 
-      // monta JSON
       char payload[1400];
       uint32_t payloadLen = 0;
       bool jsonOk = buildTelemetryJson(received, payload, sizeof(payload), payloadLen);
@@ -1348,7 +1349,8 @@ static void taskNetworkStorage(void *pvParameters) {
       bool sentCloud = false;
 
       if (jsonOk && g_mqttConnected) {
-        sentCloud = mqttPublish(AWS_IOT_PUBLISH_TOPIC, (const uint8_t*)payload, payloadLen, false);
+        // >>> PUBLICA NO TÓPICO POR DISPOSITIVO
+        sentCloud = mqttPublish(g_topicTelemetry, (const uint8_t*)payload, payloadLen, false);
         if (!sentCloud) {
           LOGW("[AWS] publish falhou. Vai para pending.");
         }
@@ -1357,7 +1359,6 @@ static void taskNetworkStorage(void *pvParameters) {
         if (!g_mqttConnected) LOGW("[AWS] Offline. Vai para pending.");
       }
 
-      // se não enviou, grava pending
       bool pendingOk = false;
       if (!sentCloud) {
         if (g_sdOk && jsonOk) pendingOk = sdAppendPendingLine(payload, payloadLen);
@@ -1464,6 +1465,9 @@ void setup() {
   Serial.println();
   Serial.println("=== AGROSMART V5 INICIANDO ===");
 
+  // >>> MUITO IMPORTANTE: monta os tópicos por dispositivo ANTES de tudo
+  buildMqttTopics();
+
   // Mutexes
   i2cMutex  = xSemaphoreCreateMutex();
   dataMutex = xSemaphoreCreateMutex();
@@ -1487,6 +1491,7 @@ void setup() {
     g_valveOffTimeMs = 0;
     g_valveLastDebugMs = 0;
     g_lastCommandId[0] = '\0';
+    g_activeCommandId[0] = '\0';
     unlockSem(valveMutex);
   }
 
