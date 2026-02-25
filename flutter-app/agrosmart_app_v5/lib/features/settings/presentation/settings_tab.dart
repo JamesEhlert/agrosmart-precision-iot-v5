@@ -1,10 +1,11 @@
-// ARQUIVO: lib/screens/settings_tab.dart
+// ARQUIVO: lib/features/settings/presentation/settings_tab.dart
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import '../models/device_model.dart';
-import '../services/device_service.dart';
-import '../core/theme/app_colors.dart'; // Importando o Design System
+
+import '../../../models/device_model.dart';
+import '../../../services/device_service.dart';
+import '../../../core/theme/app_colors.dart';
 
 class SettingsTab extends StatefulWidget {
   final DeviceModel device;
@@ -185,9 +186,10 @@ class _SettingsTabState extends State<SettingsTab> {
   Widget build(BuildContext context) {
     if (!_isInitialized) return const Center(child: CircularProgressIndicator());
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SingleChildScrollView(
+    // Removido o Scaffold desnecessário, usando apenas um Container com a cor de fundo
+    return Container(
+      color: AppColors.background,
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,

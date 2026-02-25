@@ -1,8 +1,12 @@
+// ARQUIVO: lib/screens/login_screen.dart
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/auth_service.dart';
 import 'signup_screen.dart';
-import 'dashboard_screen.dart';
+
+// Importando as cores centralizadas para usar nos ícones e mensagens
+import '../core/theme/app_colors.dart'; 
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -17,7 +21,6 @@ class _LoginScreenState extends State<LoginScreen> {
   final _authService = AuthService();
   bool _isLoading = false;
 
-  // Login com Email
   Future<void> _login() async {
     setState(() => _isLoading = true);
     try {
@@ -25,10 +28,6 @@ class _LoginScreenState extends State<LoginScreen> {
         _emailController.text.trim(),
         _passwordController.text.trim(),
       );
-      // NÃO PRECISAMOS NAVEGAR MANUALMENTE MAIS
-      // O main.dart já vai perceber que logou e mudar a tela sozinho, 
-      // mas por garantia mantemos a navegação explícita:
-      _goToDevicesList();
     } on FirebaseAuthException catch (e) {
       _showError(e.message ?? "Erro ao logar");
     } finally {
@@ -36,26 +35,14 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // Login com Google
   Future<void> _loginGoogle() async {
     setState(() => _isLoading = true);
     try {
-      final user = await _authService.loginWithGoogle();
-      if (user != null) _goToDevicesList();
+      await _authService.loginWithGoogle();
     } catch (e) {
       _showError("Erro no Google Login: $e");
     } finally {
       if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-// Navegação para a Home (Dashboard)
-  void _goToDevicesList() { // Pode manter o nome se quiser, mas o destino muda
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        // MUDANÇA AQUI: Vai para DashboardScreen
-        MaterialPageRoute(builder: (context) => const DashboardScreen()),
-      );
     }
   }
 
@@ -68,7 +55,10 @@ class _LoginScreenState extends State<LoginScreen> {
       await _authService.resetPassword(_emailController.text.trim());
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("E-mail de recuperação enviado!"), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text("E-mail de recuperação enviado!"), 
+            backgroundColor: AppColors.success,
+          ),
         );
       }
     } catch (e) {
@@ -79,7 +69,7 @@ class _LoginScreenState extends State<LoginScreen> {
   void _showError(String msg) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: Colors.red),
+        SnackBar(content: Text(msg), backgroundColor: AppColors.error),
       );
     }
   }
@@ -94,7 +84,7 @@ class _LoginScreenState extends State<LoginScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.eco, size: 80, color: Colors.green),
+              const Icon(Icons.eco, size: 80, color: AppColors.primary),
               const SizedBox(height: 16),
               const Text(
                 "AgroSmart V5",
@@ -105,14 +95,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
               TextField(
                 controller: _emailController,
-                decoration: const InputDecoration(labelText: "E-mail", border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)),
+                decoration: const InputDecoration(labelText: "E-mail", prefixIcon: Icon(Icons.email)),
                 keyboardType: TextInputType.emailAddress,
               ),
               const SizedBox(height: 16),
 
               TextField(
                 controller: _passwordController,
-                decoration: const InputDecoration(labelText: "Senha", border: OutlineInputBorder(), prefixIcon: Icon(Icons.lock)),
+                decoration: const InputDecoration(labelText: "Senha", prefixIcon: Icon(Icons.lock)),
                 obscureText: true,
               ),
               
@@ -130,8 +120,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 height: 50,
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _login,
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                  child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : const Text("ENTRAR"),
+                  child: _isLoading 
+                    ? const CircularProgressIndicator(color: AppColors.textLight) 
+                    : const Text("ENTRAR"),
                 ),
               ),
 

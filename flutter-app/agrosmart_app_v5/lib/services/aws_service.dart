@@ -4,12 +4,6 @@
 // - Authorization: Bearer <Firebase ID Token>
 // - retry automático em 401 (força refresh do token e tenta 1x de novo)
 // - Exceptions tipadas (401/403/erros gerais) para a UI tratar
-//
-// Ajustes para "ACK ponta-a-ponta":
-// - Mantém sendCommand(...) retornando bool (compatibilidade com UI atual)
-// - Adiciona sendCommandWithAck(...) que retorna commandId (para correlacionar com ACK no Firestore)
-// - Adiciona watchCommandStateForAck(...) (RECOMENDADO) para acompanhar ACK por command_id (doc único)
-// - Mantém watchAckHistoryForCommand(...) para timeline (history) e debug
 
 import 'dart:async';
 import 'dart:convert';
@@ -20,6 +14,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 
+// Importa a configuração de ambiente que criamos
+import '../core/config/app_config.dart'; 
 import '../models/telemetry_model.dart';
 
 class HistoryResponse {
@@ -28,7 +24,6 @@ class HistoryResponse {
   HistoryResponse({required this.items, this.nextToken});
 }
 
-/// Resultado do envio de comando com commandId (para E2E ACK).
 class SendCommandResult {
   final bool ok;
   final String commandId;
@@ -44,10 +39,9 @@ class SendCommandResult {
   String toString() => 'SendCommandResult(ok=$ok, commandId=$commandId, message=$message)';
 }
 
-/// Snapshot simples de ACK (normalizado do Firestore).
 class AckEvent {
   final String commandId;
-  final String status; // received|started|done|error|unknown
+  final String status;
   final String? action;
   final int? duration;
   final String? reason;
@@ -68,7 +62,6 @@ class AckEvent {
   String toString() => 'AckEvent(cmd=$commandId, status=$status, ts=$timestamp)';
 }
 
-/// Erro genérico da API (HTTP != 200)
 class ApiException implements Exception {
   final int statusCode;
   final String message;
@@ -80,31 +73,23 @@ class ApiException implements Exception {
   String toString() => 'ApiException($statusCode): $message';
 }
 
-/// 401 - usuário sem sessão/token inválido/expirado
 class UnauthorizedException extends ApiException {
   UnauthorizedException(String message, {String? body})
       : super(401, message, body: body);
 }
 
-/// 403 - token ok, mas sem permissão (IAM/Authorizer/Policy)
 class ForbiddenException extends ApiException {
   ForbiddenException(String message, {String? body})
       : super(403, message, body: body);
 }
 
 class AwsService {
-  // URLs da sua API Gateway
-  final String _telemetryUrl =
-      "https://r6rky7wzx6.execute-api.us-east-2.amazonaws.com/prod/telemetry";
-  final String _commandUrl =
-      "https://r6rky7wzx6.execute-api.us-east-2.amazonaws.com/prod/command";
+  // Agora as URLs vêm dinamicamente do AppConfig
+  final String _telemetryUrl = AppConfig.telemetryEndpoint;
+  final String _commandUrl = AppConfig.commandEndpoint;
 
-  // Firestore (para acompanhar ACK)
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // ----------------------------
-  // Helpers: token + headers
-  // ----------------------------
   Future<String> _getFirebaseIdToken({bool forceRefresh = false}) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -123,7 +108,6 @@ class AwsService {
   Future<Map<String, String>> _buildHeaders({bool forceRefresh = false}) async {
     final token = await _getFirebaseIdToken(forceRefresh: forceRefresh);
 
-    // Log seguro: mostra só os últimos chars do token (evita crash se token < 6)
     final suffix = token.length > 6 ? token.substring(token.length - 6) : token;
     debugPrint("[AUTH] Authorization header set (Bearer ****$suffix)");
 
@@ -133,15 +117,12 @@ class AwsService {
     };
   }
 
-  /// Faz request e, se vier 401, força refresh do token e tenta mais 1 vez.
   Future<http.Response> _sendWithAuthRetry(
     Future<http.Response> Function(Map<String, String> headers) send,
   ) async {
-    // Tentativa 1
     Map<String, String> headers = await _buildHeaders(forceRefresh: false);
     http.Response res = await send(headers);
 
-    // Se 401, faz refresh e tenta novamente 1x
     if (res.statusCode == 401) {
       debugPrint("[AWS] 401 recebido. Forçando refresh do token e tentando novamente...");
       headers = await _buildHeaders(forceRefresh: true);
@@ -155,33 +136,29 @@ class AwsService {
     final code = res.statusCode;
     final body = res.body;
 
-    // Tenta pegar uma mensagem amigável do JSON: {"message":"..."}
     String msg = defaultMessage ?? "Falha na API";
     try {
       final decoded = json.decode(body);
       if (decoded is Map && decoded["message"] is String) {
         msg = decoded["message"] as String;
       }
-    } catch (_) {
-      // ignora - body pode não ser JSON
-    }
+    } catch (_) {}
 
     if (code == 401) throw UnauthorizedException(msg, body: body);
     if (code == 403) throw ForbiddenException(msg, body: body);
     throw ApiException(code, msg, body: body);
   }
 
-  // ===========================================================================
-  // TELEMETRY
-  // ===========================================================================
-
-  /// Busca apenas o último dado (para o Dashboard)
   Future<TelemetryModel?> getLatestTelemetry(String deviceId) async {
+    // Validação de segurança para garantir que a URL base foi injetada corretamente
+    if (_telemetryUrl.isEmpty || _telemetryUrl == '/telemetry') {
+      throw Exception("URL da API não configurada. Verifique o --dart-define.");
+    }
+
     final uri = Uri.parse("$_telemetryUrl?device_id=$deviceId&limit=1");
 
     try {
-      final res =
-          await _sendWithAuthRetry((headers) => http.get(uri, headers: headers));
+      final res = await _sendWithAuthRetry((headers) => http.get(uri, headers: headers));
 
       if (res.statusCode != 200) {
         _throwForStatus(res, defaultMessage: "Falha ao buscar telemetria.");
@@ -201,7 +178,6 @@ class AwsService {
     }
   }
 
-  /// Busca histórico com paginação e filtro de data
   Future<HistoryResponse> getTelemetryHistory(
     String deviceId, {
     String? nextToken,
@@ -216,7 +192,6 @@ class AwsService {
         url += "&next_token=${Uri.encodeComponent(nextToken)}";
       }
 
-      // Filtros de data (timestamps em segundos)
       if (start != null && end != null) {
         final startTs = (start.millisecondsSinceEpoch / 1000).floor();
         final endTs = (end.millisecondsSinceEpoch / 1000).floor();
@@ -226,8 +201,7 @@ class AwsService {
       final uri = Uri.parse(url);
       debugPrint("Buscando histórico: $uri");
 
-      final res =
-          await _sendWithAuthRetry((headers) => http.get(uri, headers: headers));
+      final res = await _sendWithAuthRetry((headers) => http.get(uri, headers: headers));
 
       if (res.statusCode != 200) {
         _throwForStatus(res, defaultMessage: "Falha ao buscar histórico.");
@@ -255,42 +229,33 @@ class AwsService {
     }
   }
 
-  // ===========================================================================
-  // COMMAND (compat + E2E ACK)
-  // ===========================================================================
-
-  /// Gera um command_id no app (caso a API não gere ou para correlacionar com ACK).
   String _generateCommandId() {
     final ms = DateTime.now().millisecondsSinceEpoch;
     final r = Random().nextInt(1 << 20);
     return "app-$ms-$r";
   }
 
-  /// Envia comando para a válvula (device_id + action + duration)
-  ///
-  /// Compatibilidade com a UI atual: retorna bool.
-  /// Para E2E ACK, use sendCommandWithAck(...) abaixo.
   Future<bool> sendCommand(String deviceId, String action, int duration) async {
     final result = await sendCommandWithAck(
       deviceId: deviceId,
       action: action,
       duration: duration,
-      commandId: null, // gera automaticamente
+      commandId: null, 
     );
     return result.ok;
   }
 
-  /// Versão "profissional": envia comando e retorna commandId para acompanhar ACK ponta-a-ponta.
-  ///
-  /// - Se commandId for null, gera um commandId no app.
-  /// - Envia esse commandId para a API Gateway.
-  /// - Tenta ler um command_id retornado pela API (se existir), mas mantém o do app como fallback.
   Future<SendCommandResult> sendCommandWithAck({
     required String deviceId,
     required String action,
     required int duration,
     String? commandId,
   }) async {
+    // Validação de segurança
+    if (_commandUrl.isEmpty || _commandUrl == '/command') {
+      throw Exception("URL da API não configurada. Verifique o --dart-define.");
+    }
+
     final uri = Uri.parse(_commandUrl);
 
     final generated = commandId == null || commandId.isEmpty;
@@ -300,7 +265,7 @@ class AwsService {
       "device_id": deviceId,
       "action": action,
       "duration": duration,
-      "command_id": cmdId, // <<< IMPORTANTE PARA E2E ACK
+      "command_id": cmdId, 
     };
 
     final body = json.encode(bodyMap);
@@ -313,7 +278,6 @@ class AwsService {
       );
 
       if (res.statusCode == 200) {
-        // Se a API devolver JSON com command_id, ótimo; se não, usamos cmdId
         String finalCmdId = cmdId;
         String message = "Comando enviado com sucesso.";
 
@@ -329,9 +293,7 @@ class AwsService {
               message = decoded["message"] as String;
             }
           }
-        } catch (_) {
-          // body pode não ser JSON
-        }
+        } catch (_) {}
 
         debugPrint("Comando enviado OK. command_id=$finalCmdId (generated=$generated)");
         return SendCommandResult(ok: true, commandId: finalCmdId, message: message);
@@ -343,10 +305,6 @@ class AwsService {
       rethrow;
     }
   }
-
-  // ===========================================================================
-  // ACK (Firestore) — acompanhar por command_id
-  // ===========================================================================
 
   String _normalizeStatus(dynamic raw) {
     if (raw == null) return "unknown";
@@ -363,14 +321,6 @@ class AwsService {
     return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
-  /// ✅ RECOMENDADO (E2E):
-  /// Escuta o documento de estado do comando:
-  ///   devices/{deviceId}/commands/{commandId}
-  ///
-  /// Espera campos criados pela Lambda:
-  /// - last_status
-  /// - last_status_at (Timestamp)
-  /// - action, duration, reason, error (opcionais)
   Stream<AckEvent?> watchCommandStateForAck({
     required String deviceId,
     required String commandId,
@@ -407,7 +357,6 @@ class AwsService {
     });
   }
 
-  /// Aguarda até aparecer um ACK final ("done" ou "error") no doc commands/`commandId`.
   Future<AckEvent?> waitForFinalAckFromCommandState({
     required String deviceId,
     required String commandId,
@@ -442,11 +391,6 @@ class AwsService {
     return completer.future;
   }
 
-  /// (Timeline/Debug)
-  /// Stream que emite eventos de ACK no history para um command_id.
-  ///
-  /// Útil para “Eventos”, auditoria e debug.
-  /// Para E2E ACK e UX, prefira watchCommandStateForAck().
   Stream<List<AckEvent>> watchAckHistoryForCommand({
     required String deviceId,
     required String commandId,
@@ -485,14 +429,11 @@ class AwsService {
         ));
       }
 
-      // Ordena localmente (mais recente primeiro)
       events.sort((a, b) => b.timestamp.compareTo(a.timestamp));
       return events;
     });
   }
 
-  /// Mantém compatibilidade com seu nome antigo (se alguma tela já usa).
-  /// (Opcional: você pode remover depois que migrar tudo)
   Stream<List<AckEvent>> watchAckForCommand({
     required String deviceId,
     required String commandId,
@@ -501,8 +442,6 @@ class AwsService {
     return watchAckHistoryForCommand(deviceId: deviceId, commandId: commandId, limit: limit);
   }
 
-  /// Helper antigo (baseado no history). Mantido por compatibilidade.
-  /// Para UX melhor, prefira waitForFinalAckFromCommandState().
   Future<AckEvent?> waitForFinalAck({
     required String deviceId,
     required String commandId,

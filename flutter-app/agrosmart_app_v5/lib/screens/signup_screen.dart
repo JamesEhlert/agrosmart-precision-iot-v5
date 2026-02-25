@@ -2,7 +2,6 @@
 
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
-import 'dashboard_screen.dart'; // <--- CORREÇÃO: Importa o Dashboard agora
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -35,14 +34,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
         _nameController.text.trim(),
       );
       
-      // Verifica se a tela ainda existe antes de navegar
-      if (!mounted) return;
-
-      // CORREÇÃO: Remove histórico e vai para o DashboardScreen
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (context) => const DashboardScreen()),
-        (route) => false,
-      );
+      // A navegação agora acontece automaticamente pelo StreamBuilder no main.dart!
+      // Se der certo, ele vai direto para o Dashboard.
+      
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

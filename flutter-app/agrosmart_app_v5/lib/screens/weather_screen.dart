@@ -7,6 +7,9 @@ import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart'; 
 import '../models/device_model.dart';
 
+// Importa o nosso design system!
+import '../core/theme/app_colors.dart'; 
+
 class WeatherScreen extends StatefulWidget {
   final DeviceModel device;
 
@@ -39,7 +42,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
     try {
       await initializeDateFormatting('pt_BR', null);
 
-      // ATUALIZADO: Adicionamos 'precipitation_probability_max' na chamada API
       final url = Uri.parse(
           "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=auto");
 
@@ -60,7 +62,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
   }
 
-  // Helper para traduzir códigos WMO
   Map<String, dynamic> _getWeatherInfo(int code) {
     switch (code) {
       case 0: return {'label': 'Céu Limpo', 'icon': Icons.wb_sunny, 'color': Colors.orange};
@@ -87,8 +88,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Previsão 7 Dias"),
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
+        backgroundColor: AppColors.primary, // Corrigido para a cor do tema
+        foregroundColor: AppColors.textLight,
       ),
       body: _buildBody(),
     );
@@ -109,14 +110,14 @@ class _WeatherScreenState extends State<WeatherScreen> {
           width: double.infinity,
           padding: const EdgeInsets.all(24),
           decoration: const BoxDecoration(
-            color: Colors.blueAccent,
+            color: AppColors.primary, // Corrigido para a cor do tema
             borderRadius: BorderRadius.vertical(bottom: Radius.circular(30)),
           ),
           child: Column(
             children: [
-              Icon(currentInfo['icon'], size: 64, color: Colors.white),
+              Icon(currentInfo['icon'], size: 64, color: AppColors.textLight),
               const SizedBox(height: 10),
-              Text("${current['temperature_2m']}°C", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text("${current['temperature_2m']}°C", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: AppColors.textLight)),
               Text(currentInfo['label'], style: const TextStyle(fontSize: 20, color: Colors.white70)),
             ],
           ),
@@ -132,7 +133,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
               final max = daily['temperature_2m_max'][index];
               final min = daily['temperature_2m_min'][index];
               final rainMm = daily['precipitation_sum'][index];
-              final rainProb = daily['precipitation_probability_max'][index]; // Novo
+              final rainProb = daily['precipitation_probability_max'][index];
               final code = daily['weather_code'][index];
               final info = _getWeatherInfo(code);
 
@@ -149,7 +150,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                         children: [
                           Icon(info['icon'], color: info['color'], size: 30),
                           const SizedBox(height: 4),
-                          Text(_formatDay(date).split(',')[0], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)), // Apenas dia da semana
+                          Text(_formatDay(date).split(',')[0], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                         ],
                       ),
                       const SizedBox(width: 16),
@@ -163,7 +164,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                             const SizedBox(height: 4),
                             Row(
                               children: [
-                                const Icon(Icons.water_drop, size: 14, color: Colors.blue),
+                                const Icon(Icons.water_drop, size: 14, color: AppColors.info),
                                 Text(" $rainProb% ($rainMm mm)", style: TextStyle(color: Colors.grey[700], fontSize: 13)),
                               ],
                             )
@@ -175,8 +176,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          Text("Máx $max°", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
-                          Text("Mín $min°", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent)),
+                          Text("Máx $max°", style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.errorAccent)),
+                          Text("Mín $min°", style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.info)),
                         ],
                       )
                     ],

@@ -1,13 +1,14 @@
-// ARQUIVO: lib/screens/history_tab.dart
+// ARQUIVO: lib/features/history/presentation/history_tab.dart
 
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
-import 'package:fl_chart/fl_chart.dart'; // Importante: Biblioteca de gráficos
+import 'package:fl_chart/fl_chart.dart'; 
 
-import '../models/device_model.dart';
-import '../models/telemetry_model.dart';
-import '../services/aws_service.dart';
+import '../../../models/device_model.dart';
+import '../../../models/telemetry_model.dart';
+import '../../../services/aws_service.dart';
+import '../../../core/theme/app_colors.dart'; // IMPORT DO NOVO DESIGN SYSTEM
 
 class HistoryTab extends StatefulWidget {
   final DeviceModel device;
@@ -20,17 +21,16 @@ class HistoryTab extends StatefulWidget {
 class _HistoryTabState extends State<HistoryTab> {
   @override
   Widget build(BuildContext context) {
-    // Usamos DefaultTabController para gerenciar as abas Lista vs Gráficos
     return DefaultTabController(
       length: 2,
       child: Column(
         children: [
           Container(
-            color: Colors.white,
+            color: AppColors.surface, // Atualizado para usar cor de superfície
             child: const TabBar(
-              labelColor: Colors.green,
-              unselectedLabelColor: Colors.grey,
-              indicatorColor: Colors.green,
+              labelColor: AppColors.primary, // Atualizado para a cor primária
+              unselectedLabelColor: AppColors.textSecondary,
+              indicatorColor: AppColors.primary,
               tabs: [
                 Tab(icon: Icon(Icons.list), text: "Lista"),
                 Tab(icon: Icon(Icons.show_chart), text: "Gráficos"),
@@ -39,7 +39,7 @@ class _HistoryTabState extends State<HistoryTab> {
           ),
           Expanded(
             child: TabBarView(
-              physics: const NeverScrollableScrollPhysics(), // Evita conflito de gestos com o gráfico
+              physics: const NeverScrollableScrollPhysics(), 
               children: [
                 _SensorsListView(device: widget.device),
                 _ChartsView(device: widget.device),
@@ -69,11 +69,10 @@ class _SensorsListViewState extends State<_SensorsListView> {
   bool _isLoading = false;
   bool _hasMore = true;
 
-  // Evita spam de SnackBars
   DateTime? _lastSnackAt;
   String? _lastSnackKey;
 
-  void _snackOnce(String key, String msg, {Color color = Colors.red, int cooldownSeconds = 20}) {
+  void _snackOnce(String key, String msg, {Color color = AppColors.error, int cooldownSeconds = 20}) {
     if (!mounted) return;
     final now = DateTime.now();
     final shouldShow = (_lastSnackKey != key) ||
@@ -113,18 +112,18 @@ class _SensorsListViewState extends State<_SensorsListView> {
       });
     } on UnauthorizedException catch (_) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_list_401", "Sessão expirada. Faça login novamente.", color: Colors.red);
+      _snackOnce("hist_list_401", "Sessão expirada. Faça login novamente.", color: AppColors.error);
       await FirebaseAuth.instance.signOut();
     } on ForbiddenException catch (_) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_list_403", "Sem permissão para acessar o histórico deste dispositivo.", color: Colors.orange);
+      _snackOnce("hist_list_403", "Sem permissão para acessar o histórico deste dispositivo.", color: AppColors.warning);
       if (mounted) setState(() => _hasMore = false);
     } on ApiException catch (e) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_list_${e.statusCode}", "Erro (${e.statusCode}): ${e.message}", color: Colors.red);
+      _snackOnce("hist_list_${e.statusCode}", "Erro (${e.statusCode}): ${e.message}", color: AppColors.error);
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_list_unknown", "Erro ao carregar histórico: $e", color: Colors.red);
+      _snackOnce("hist_list_unknown", "Erro ao carregar histórico: $e", color: AppColors.error);
     }
   }
 
@@ -135,7 +134,7 @@ class _SensorsListViewState extends State<_SensorsListView> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading && _data.isEmpty) return const Center(child: CircularProgressIndicator());
+    if (_isLoading && _data.isEmpty) return const Center(child: CircularProgressIndicator(color: AppColors.primary));
 
     return ListView.builder(
       padding: const EdgeInsets.all(8),
@@ -143,8 +142,11 @@ class _SensorsListViewState extends State<_SensorsListView> {
       itemBuilder: (ctx, i) {
         if (i == _data.length) {
           return _hasMore
-              ? TextButton(onPressed: _loadData, child: const Text("Carregar Mais"))
-              : const Padding(padding: EdgeInsets.all(16), child: Center(child: Text("Fim")));
+              ? TextButton(
+                  onPressed: _loadData, 
+                  child: const Text("Carregar Mais", style: TextStyle(color: AppColors.primary))
+                )
+              : const Padding(padding: EdgeInsets.all(16), child: Center(child: Text("Fim", style: TextStyle(color: AppColors.textSecondary))));
         }
         final item = _data[i];
         return Card(
@@ -155,9 +157,9 @@ class _SensorsListViewState extends State<_SensorsListView> {
             title: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _iconText(Icons.thermostat, "${item.airTemp.toStringAsFixed(1)}°", Colors.orange),
-                _iconText(Icons.water_drop, "${item.airHumidity.toStringAsFixed(0)}%", Colors.blue),
-                _iconText(Icons.grass, "${item.soilMoisture.toStringAsFixed(0)}%", Colors.brown),
+                _iconText(Icons.thermostat, "${item.airTemp.toStringAsFixed(1)}°", AppColors.sensorTemp),
+                _iconText(Icons.water_drop, "${item.airHumidity.toStringAsFixed(0)}%", AppColors.sensorHumidity),
+                _iconText(Icons.grass, "${item.soilMoisture.toStringAsFixed(0)}%", AppColors.sensorSoil),
               ],
             ),
           ),
@@ -186,28 +188,29 @@ class _ChartsViewState extends State<_ChartsView> {
 
   DateTimeRange? _dateRange;
 
+  // Atualizado para as cores do Design System
   final Map<String, dynamic> _sensorsConfig = {
     'soil': {
       'label': 'Solo (%)',
-      'color': Colors.brown,
+      'color': AppColors.sensorSoil,
       'active': true,
       'getter': (TelemetryModel t) => t.soilMoisture
     },
     'air_hum': {
       'label': 'Ar (%)',
-      'color': Colors.blue,
+      'color': AppColors.sensorHumidity,
       'active': false,
       'getter': (TelemetryModel t) => t.airHumidity
     },
     'temp': {
       'label': 'Temp (°C)',
-      'color': Colors.orange,
+      'color': AppColors.sensorTemp,
       'active': false,
       'getter': (TelemetryModel t) => t.airTemp
     },
     'uv': {
       'label': 'UV',
-      'color': Colors.purple,
+      'color': AppColors.sensorUv,
       'active': false,
       'getter': (TelemetryModel t) => t.uvIndex
     },
@@ -219,7 +222,7 @@ class _ChartsViewState extends State<_ChartsView> {
   DateTime? _lastSnackAt;
   String? _lastSnackKey;
 
-  void _snackOnce(String key, String msg, {Color color = Colors.red, int cooldownSeconds = 20}) {
+  void _snackOnce(String key, String msg, {Color color = AppColors.error, int cooldownSeconds = 20}) {
     if (!mounted) return;
     final now = DateTime.now();
     final shouldShow = (_lastSnackKey != key) ||
@@ -260,19 +263,19 @@ class _ChartsViewState extends State<_ChartsView> {
       });
     } on UnauthorizedException catch (_) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_chart_401", "Sessão expirada. Faça login novamente.", color: Colors.red);
+      _snackOnce("hist_chart_401", "Sessão expirada. Faça login novamente.", color: AppColors.error);
       await FirebaseAuth.instance.signOut();
     } on ForbiddenException catch (_) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_chart_403", "Sem permissão para acessar dados deste dispositivo.", color: Colors.orange);
+      _snackOnce("hist_chart_403", "Sem permissão para acessar dados deste dispositivo.", color: AppColors.warning);
       if (mounted) setState(() => _chartData = []);
     } on ApiException catch (e) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_chart_${e.statusCode}", "Erro (${e.statusCode}): ${e.message}", color: Colors.red);
+      _snackOnce("hist_chart_${e.statusCode}", "Erro (${e.statusCode}): ${e.message}", color: AppColors.error);
       if (mounted) setState(() => _chartData = []);
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
-      _snackOnce("hist_chart_unknown", "Erro ao carregar gráfico: $e", color: Colors.red);
+      _snackOnce("hist_chart_unknown", "Erro ao carregar gráfico: $e", color: AppColors.error);
       if (mounted) setState(() => _chartData = []);
     }
   }
@@ -286,8 +289,8 @@ class _ChartsViewState extends State<_ChartsView> {
       builder: (context, child) {
         return Theme(
           data: ThemeData.light().copyWith(
-            primaryColor: Colors.green,
-            colorScheme: const ColorScheme.light(primary: Colors.green),
+            primaryColor: AppColors.primary,
+            colorScheme: const ColorScheme.light(primary: AppColors.primary),
           ),
           child: child!,
         );
@@ -311,10 +314,13 @@ class _ChartsViewState extends State<_ChartsView> {
             children: [
               OutlinedButton.icon(
                 onPressed: _pickDateRange,
-                icon: const Icon(Icons.calendar_today, size: 16),
-                label: Text(_dateRange == null
+                icon: const Icon(Icons.calendar_today, size: 16, color: AppColors.primary),
+                label: Text(
+                  _dateRange == null
                     ? "Selecionar Data"
-                    : "${DateFormat('dd/MM').format(_dateRange!.start)} - ${DateFormat('dd/MM').format(_dateRange!.end)}"),
+                    : "${DateFormat('dd/MM').format(_dateRange!.start)} - ${DateFormat('dd/MM').format(_dateRange!.end)}",
+                  style: const TextStyle(color: AppColors.primary),
+                ),
               ),
               const SizedBox(height: 8),
               SingleChildScrollView(
@@ -331,7 +337,7 @@ class _ChartsViewState extends State<_ChartsView> {
                         selectedColor: (conf['color'] as Color).withValues(alpha: 0.2),
                         checkmarkColor: conf['color'],
                         labelStyle: TextStyle(
-                          color: conf['active'] ? conf['color'] : Colors.black54,
+                          color: conf['active'] ? conf['color'] : AppColors.textSecondary,
                           fontWeight: conf['active'] ? FontWeight.bold : FontWeight.normal,
                         ),
                         onSelected: (bool selected) {
@@ -353,9 +359,9 @@ class _ChartsViewState extends State<_ChartsView> {
         // --- 2. ÁREA DO GRÁFICO ---
         Expanded(
           child: _isLoading
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
               : _chartData.isEmpty
-                  ? const Center(child: Text("Sem dados neste período."))
+                  ? const Center(child: Text("Sem dados neste período.", style: TextStyle(color: AppColors.textSecondary)))
                   : Padding(
                       padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
                       child: LineChart(
@@ -373,7 +379,7 @@ class _ChartsViewState extends State<_ChartsView> {
                                       return Padding(
                                         padding: const EdgeInsets.only(top: 8.0),
                                         child: Text(DateFormat('HH:mm').format(date),
-                                            style: const TextStyle(fontSize: 10)),
+                                            style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
                                       );
                                     }
                                   }
@@ -404,7 +410,7 @@ class _ChartsViewState extends State<_ChartsView> {
                                   final timeStr = DateFormat('HH:mm').format(date);
                                   return LineTooltipItem(
                                     "$timeStr\n${spot.y.toStringAsFixed(1)}",
-                                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                    const TextStyle(color: AppColors.textLight, fontWeight: FontWeight.bold),
                                   );
                                 }).toList();
                               },
