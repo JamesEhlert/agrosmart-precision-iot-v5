@@ -22,7 +22,6 @@ class DeviceService {
       final data = snapshot.data();
       if (data == null || !data.containsKey('my_devices')) return [];
 
-      // Converte a lista do Firebase para lista de Strings
       return List<String>.from(data['my_devices']);
     });
   }
@@ -35,7 +34,6 @@ class DeviceService {
         .snapshots()
         .map((doc) {
       if (!doc.exists) {
-        // Retorna um modelo padrão caso não ache (evita crash)
         return DeviceModel(
             id: deviceId,
             isOnline: false,
@@ -43,8 +41,7 @@ class DeviceService {
               targetMoisture: 0, 
               manualDuration: 0, 
               deviceName: 'Desconhecido',
-              timezoneOffset: -3, // Default Brasília se não encontrar
-              // CORREÇÃO 1: Adicionado capabilities vazio para satisfazer o modelo
+              timezoneOffset: -3,
               capabilities: [] 
             )
         );
@@ -53,49 +50,59 @@ class DeviceService {
     });
   }
 
-  // Adicionar Dispositivo (Vincular ao Usuário)
+  // Adicionar Dispositivo (Upsert Seguro) - CORREÇÃO DE PERMISSÃO
   Future<void> linkDeviceToUser(String deviceId, String initialName) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception("Usuário não logado");
 
-    // 1. Verifica se o dispositivo existe na coleção 'devices' (Segurança)
     final deviceRef = _firestore.collection('devices').doc(deviceId);
-    final deviceDoc = await deviceRef.get();
 
-    // Se não existir, criamos o registro inicial do dispositivo
-    if (!deviceDoc.exists) {
-      // CORREÇÃO 2: Usar o método toMap() do modelo para garantir consistência
-      // Isso já inclui o campo 'capabilities' padrão.
-      
-      final defaultSettings = DeviceSettings(
-        deviceName: initialName,
-        targetMoisture: 60,
-        manualDuration: 5,
-        timezoneOffset: -3,
-        // Assume que novos dispositivos são completos por padrão (V5)
-        capabilities: ['air', 'soil', 'light', 'rain', 'uv'] 
-      );
+    // Configurações padrão caso seja um dispositivo novo
+    final defaultSettings = {
+      'device_name': initialName,
+      'target_soil_moisture': 60,
+      'manual_valve_duration': 5,
+      'timezone_offset': -3,
+      'capabilities': ['air', 'soil', 'light', 'rain', 'uv'],
+      'enable_weather_control': false,
+    };
 
+    try {
+      // Usamos SetOptions(merge: true). 
+      // Se não existir, ele cria obedecendo a regra 'allow create' (passando owner_uid correto).
+      // Se existir e for seu, a regra 'allow update' permite a alteração do nome.
+      // Se existir e for de outro, a regra 'allow update' BLOQUEIA na hora (permission-denied).
       await deviceRef.set({
         'device_id': deviceId,
-        'online': false,
         'owner_uid': user.uid,
-        'created_at': FieldValue.serverTimestamp(),
-        'settings': defaultSettings.toMap(), // Salva o mapa completo
-      });
+        'settings': defaultSettings,
+      }, SetOptions(merge: true));
+
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        throw Exception("Falha de segurança: Este dispositivo já pertence a outra pessoa.");
+      }
+      rethrow;
     }
 
-    // 2. Adiciona o ID no array 'my_devices' do usuário
+    // Adiciona o ID no array 'my_devices' da coleção do usuário
     await _firestore.collection('users').doc(user.uid).update({
       'my_devices': FieldValue.arrayUnion([deviceId])
     });
   }
 
-  // Atualiza as configurações (Nome, Umidade, Tempo Manual, Fuso) no Firestore
+  // Atualiza as configurações (Melhoria P1: Dot-notation)
   Future<void> updateDeviceSettings(String deviceId, DeviceSettings newSettings) async {
-    // Atualiza apenas o campo 'settings' dentro do documento do dispositivo
+    // Agora atualizamos campo a campo. Isso evita apagar configurações novas 
+    // que o firmware ou o backend possam adicionar no futuro dentro de 'settings'.
     await _firestore.collection('devices').doc(deviceId).update({
-      'settings': newSettings.toMap(),
+      'settings.device_name': newSettings.deviceName,
+      'settings.target_soil_moisture': newSettings.targetMoisture,
+      'settings.manual_valve_duration': newSettings.manualDuration,
+      'settings.timezone_offset': newSettings.timezoneOffset,
+      'settings.enable_weather_control': newSettings.enableWeatherControl,
+      'settings.latitude': newSettings.latitude,   // <--- LINHA ADICIONADA
+      'settings.longitude': newSettings.longitude, // <--- LINHA ADICIONADA
     });
   }
 
@@ -104,7 +111,6 @@ class DeviceService {
     final user = _auth.currentUser;
     if (user == null) throw Exception("Usuário não logado");
 
-    // Remove o ID do array 'my_devices' do usuário
     await _firestore.collection('users').doc(user.uid).update({
       'my_devices': FieldValue.arrayRemove([deviceId])
     });

@@ -5,7 +5,10 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 import 'screens/login_screen.dart';
-import 'screens/dashboard_screen.dart'; // <--- Agora usamos o Dashboard como home
+import 'features/dashboard/presentation/dashboard_page.dart'; 
+
+// Importando o nosso novo Design System
+import 'core/theme/app_theme.dart'; 
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,15 +26,8 @@ class AgroSmartApp extends StatelessWidget {
     return MaterialApp(
       title: 'AgroSmart V5',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primarySwatch: Colors.green,
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2E7D32),
-          brightness: Brightness.light,
-        ),
-      ),
-      // O StreamBuilder define se vai para Login ou Dashboard direto
+      // Aplicando o tema centralizado. Todas as telas agora herdam daqui!
+      theme: AppTheme.lightTheme, 
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
@@ -39,8 +35,7 @@ class AgroSmartApp extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasData) {
-            // Se logado, vai direto para o Dashboard (que gerencia a lista de devices)
-            return const DashboardScreen(); 
+            return const DashboardPage(); 
           }
           return const LoginScreen();
         },

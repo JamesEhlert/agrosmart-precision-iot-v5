@@ -1,10 +1,13 @@
+// ARQUIVO: lib/screens/schedule_form_screen.dart
+
 import 'package:flutter/material.dart';
 import '../models/schedule_model.dart';
 import '../services/schedules_service.dart';
+import '../core/theme/app_colors.dart'; // Design System
 
 class ScheduleFormScreen extends StatefulWidget {
   final String deviceId;
-  final ScheduleModel? scheduleToEdit; // Se vier preenchido, é Edição. Se nulo, é Criação.
+  final ScheduleModel? scheduleToEdit;
   
   const ScheduleFormScreen({
     super.key, 
@@ -34,19 +37,17 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
   @override
   void initState() {
     super.initState();
-    // Se estamos editando, preenchemos os campos com os dados existentes
     if (widget.scheduleToEdit != null) {
       final s = widget.scheduleToEdit!;
       _labelController.text = s.label;
       _duration = s.durationMinutes.toDouble();
       _selectedDays.addAll(s.days);
       
-      // Converte string "18:30" de volta para TimeOfDay(18, 30)
       try {
         final parts = s.time.split(':');
         _selectedTime = TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
       } catch (e) {
-        // Se der erro no parse, mantém o padrão
+        // Ignora erro de parse
       }
     }
   }
@@ -55,7 +56,7 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
     if (!_formKey.currentState!.validate()) return;
     
     if (_selectedDays.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Selecione pelo menos um dia.")));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Selecione pelo menos um dia."), backgroundColor: AppColors.errorAccent));
       return;
     }
 
@@ -66,16 +67,15 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
       final minute = _selectedTime.minute.toString().padLeft(2, '0');
       final timeString = "$hour:$minute";
 
-      // Verifica se é Edição (tem ID) ou Criação (ID vazio temporário)
       final bool isEditing = widget.scheduleToEdit != null;
 
       final scheduleData = ScheduleModel(
-        id: isEditing ? widget.scheduleToEdit!.id : '', // Mantém ID se editando
+        id: isEditing ? widget.scheduleToEdit!.id : '', 
         label: _labelController.text.trim(),
         time: timeString,
         days: _selectedDays..sort(),
         durationMinutes: _duration.toInt(),
-        isEnabled: true, // Ao editar/criar, salvamos como ativo por padrão
+        isEnabled: true, 
       );
 
       if (isEditing) {
@@ -85,11 +85,11 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
       }
 
       if (!mounted) return;
-      Navigator.pop(context); // Fecha a tela
+      Navigator.pop(context); 
 
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: AppColors.error));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -107,8 +107,8 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(isEditing ? "Editar Agendamento" : "Novo Agendamento"),
-        backgroundColor: isEditing ? Colors.orange : Colors.green, // Cor diferente para indicar edição
-        foregroundColor: Colors.white,
+        backgroundColor: isEditing ? AppColors.warning : AppColors.primary,
+        foregroundColor: AppColors.textLight,
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -119,7 +119,7 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
             children: [
               TextFormField(
                 controller: _labelController,
-                decoration: const InputDecoration(labelText: "Nome", border: OutlineInputBorder(), prefixIcon: Icon(Icons.label)),
+                decoration: const InputDecoration(labelText: "Nome", prefixIcon: Icon(Icons.label)),
                 validator: (val) => val == null || val.isEmpty ? "Digite um nome" : null,
               ),
               const SizedBox(height: 20),
@@ -127,9 +127,9 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
               ListTile(
                 title: const Text("Horário"),
                 subtitle: Text("${_selectedTime.hour.toString().padLeft(2,'0')}:${_selectedTime.minute.toString().padLeft(2,'0')}",
-                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.green)),
+                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: AppColors.primary)),
                 trailing: const Icon(Icons.access_time, size: 30),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: Colors.grey)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: AppColors.textSecondary)),
                 onTap: _pickTime,
               ),
               const SizedBox(height: 20),
@@ -142,8 +142,8 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
                   return FilterChip(
                     label: Text(entry.value),
                     selected: isSelected,
-                    selectedColor: Colors.green[100],
-                    checkmarkColor: Colors.green,
+                    selectedColor: AppColors.primaryLight,
+                    checkmarkColor: AppColors.primary,
                     onSelected: (selected) {
                       setState(() {
                         if (selected) {
@@ -163,7 +163,8 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
                 children: [
                   Expanded(
                     child: Slider(
-                      value: _duration, min: 1, max: 60, divisions: 59, label: "${_duration.toInt()} min", activeColor: Colors.green,
+                      value: _duration, min: 1, max: 60, divisions: 59, label: "${_duration.toInt()} min", 
+                      activeColor: AppColors.primary,
                       onChanged: (val) => setState(() => _duration = val),
                     ),
                   ),
@@ -177,11 +178,10 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _save,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: isEditing ? Colors.orange : Colors.green, 
-                    foregroundColor: Colors.white
+                    backgroundColor: isEditing ? AppColors.warning : AppColors.primary, 
                   ),
                   child: _isLoading 
-                    ? const CircularProgressIndicator(color: Colors.white)
+                    ? const CircularProgressIndicator(color: AppColors.textLight)
                     : Text(isEditing ? "ATUALIZAR" : "CRIAR"),
                 ),
               )

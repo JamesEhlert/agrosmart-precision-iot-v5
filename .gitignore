@@ -35,3 +35,6 @@ firmware/compile_commands.json
 
 # Private docs (do not commit)
 docs/private/
+
+# VS Code local settings (do not commit)
+flutter-app/agrosmart_app_v5/.vscode/
