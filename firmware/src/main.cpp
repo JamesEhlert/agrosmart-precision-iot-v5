@@ -4,7 +4,7 @@
  * ===================================================================================
  * AUTOR: James Rafael Ehlert
  * DATA: 11/02/2026
- * VERSÃO: 5.17.4 (device-scoped topics + ACK ponta-a-ponta + SD crash-safe)
+ * VERSÃO: 5.17.5 (Adjusted: Standardized ACK status + QoS 1 Subscribe)
  * ===================================================================================
  *
  * MOTIVAÇÃO
@@ -13,16 +13,14 @@
  * - Evoluir para "produto": tópicos MQTT por dispositivo + ACK ponta-a-ponta
  *
  * PRINCIPAIS MELHORIAS (RESUMO)
- *  1) Store-and-forward NDJSON append-only (cada amostra offline vira 1 linha)
- *  2) Flush com offset persistido em NVS (retoma após reboot; avança SOMENTE após publish OK)
- *  3) Compactação crash-safe (TMP + BAK + renames atômicos)
- *  4) SD protegido por mutex + loops com vTaskDelay/yield (mitiga WDT)
- *  5) PubSubClient com buffer maior + publish com length + logs detalhados (state, TLS, buffer)
- *  6) Telemetry_id estável (device_id + timestamp + seq) e seq persistida em NVS
- *  7) MQTT topics por dispositivo:
- *     - agrosmart/v5/<THINGNAME>/telemetry
- *     - agrosmart/v5/<THINGNAME>/command
- *     - agrosmart/v5/<THINGNAME>/ack
+ * 1) Store-and-forward NDJSON append-only (cada amostra offline vira 1 linha)
+ * 2) Flush com offset persistido em NVS (retoma após reboot; avança SOMENTE após publish OK)
+ * 3) Compactação crash-safe (TMP + BAK + renames atômicos)
+ * 4) SD protegido por mutex + loops com vTaskDelay/yield (mitiga WDT)
+ * 5) PubSubClient com buffer maior + publish com length + logs detalhados (state, TLS, buffer)
+ * 6) Telemetry_id estável (device_id + timestamp + seq) e seq persistida em NVS
+ * 7) MQTT topics por dispositivo.
+ * 8) AJUSTE RECENTE: Status de ACK padronizados ("failed" em vez de "error") e Subscribe com QoS 1.
  *
  * OBS IMPORTANTES
  * - A telemetria é publicada em MQTT (AWS IoT Core). Uma IoT Rule grava no DynamoDB.
@@ -59,7 +57,7 @@
 // BUILD FLAGS / DEFAULTS (definidos no platformio.ini via build_flags)
 // ===================================================================================
 #ifndef FW_VERSION
-  #define FW_VERSION "5.17.4"
+  #define FW_VERSION "5.17.5"
 #endif
 
 #ifndef DEFAULT_TELEMETRY_INTERVAL_MS
@@ -98,11 +96,13 @@ static char g_topicTelemetry[128];
 static char g_topicCommand[128];
 static char g_topicAck[128];
 
+static char g_topicPresence[128];
 static void buildMqttTopics() {
   // agrosmart/v5/<THINGNAME>/telemetry|command|ack
   snprintf(g_topicTelemetry, sizeof(g_topicTelemetry), "%s/%s/telemetry", AGROSMART_TOPIC_PREFIX, THINGNAME);
   snprintf(g_topicCommand,   sizeof(g_topicCommand),   "%s/%s/command",   AGROSMART_TOPIC_PREFIX, THINGNAME);
   snprintf(g_topicAck,       sizeof(g_topicAck),       "%s/%s/ack",       AGROSMART_TOPIC_PREFIX, THINGNAME);
+  snprintf(g_topicPresence,  sizeof(g_topicPresence),  "%s/%s/presence",  AGROSMART_TOPIC_PREFIX, THINGNAME);
 }
 
 // ===================================================================================
@@ -288,7 +288,7 @@ static void cfgSet(const RuntimeConfig& c) {
 static void printConfig() {
   RuntimeConfig c = cfgGet();
   LOGI("FW=%s | THING=%s | schema=%d", FW_VERSION, THINGNAME, TELEMETRY_SCHEMA_VERSION);
-  LOGI("[MQTT] telemetry=%s | command=%s | ack=%s", g_topicTelemetry, g_topicCommand, g_topicAck);
+  LOGI("[MQTT] telemetry=%s | command=%s | ack=%s | presence=%s", g_topicTelemetry, g_topicCommand, g_topicAck, g_topicPresence);
   LOGI("[NVS] tele_int=%lu ms, soil(dry=%d wet=%d), seq=%lu, pend_off=%lu",
        (unsigned long)c.telemetry_interval_ms, c.soil_raw_dry, c.soil_raw_wet,
        (unsigned long)g_telemetrySeq, (unsigned long)g_pendingOffset);
@@ -524,6 +524,79 @@ static bool mqttPublish(const char* topic, const uint8_t* payload, uint32_t len,
   } else {
     LOGD("[AWS] publish OK len=%lu topic=%s", (unsigned long)len, topic);
   }
+  return ok;
+}
+
+
+// ===================================================================================
+// 7.0) PRESENÇA ONLINE/OFFLINE (MQTT Presence: LWT + Birth)
+// ===================================================================================
+//
+// Objetivo:
+// - Publicar "online" (retained) imediatamente após conectar (Birth).
+// - Configurar um Last Will and Testament (LWT) para o broker publicar "offline" (retained)
+//   caso o dispositivo caia (queda de Wi-Fi, falta de energia, reset, etc.) sem DISCONNECT limpo.
+//
+// Por que "retained"?
+// - O broker mantém o último estado e qualquer consumidor (ou regra) consegue ler o status atual
+//   sem depender de heurística de "última telemetria".
+//
+// Tópico padronizado por device_id (THINGNAME):
+//   agrosmart/v5/<THINGNAME>/presence
+//
+// Payload: JSON pequeno (fácil de evoluir no backend/app).
+//
+static const uint8_t PRESENCE_QOS = 1;      // QoS do LWT (PubSubClient publish normal é QoS 0)
+static const bool    PRESENCE_RETAIN = true;
+
+static bool buildPresenceJson(const char* state,
+                              const char* kind,
+                              char* out,
+                              size_t outSz,
+                              uint32_t& outLen) {
+  if (!state || !out || outSz < 8) return false;
+
+  // Importante: manter pequeno para não inchar o CONNECT (LWT via CONNECT packet).
+  StaticJsonDocument<256> doc;
+  doc["device_id"] = THINGNAME;
+  doc["state"] = state;                // "online" | "offline"
+  doc["kind"]  = kind ? kind : "evt";   // "birth" | "lwt" | "evt"
+  doc["fw"]    = FW_VERSION;
+
+  // Esses campos ajudam debug e não são críticos para o backend (ele pode usar timestamp() da Rule).
+  doc["uptime_ms"] = (uint32_t)msNow();
+
+  // epoch (segundos). Se NTP ainda não sincronizou, pode vir 0/errado — ok, o backend deve usar server-time.
+  time_t now = 0;
+  time(&now);
+  if (now > 0) doc["epoch"] = (uint32_t)now;
+
+  // IP só se Wi-Fi já estiver ok
+  if (WiFi.status() == WL_CONNECTED) {
+    String ip = WiFi.localIP().toString();
+    doc["ip"] = ip;
+  }
+
+  outLen = (uint32_t)serializeJson(doc, out, outSz);
+  if (outLen == 0 || outLen >= outSz) return false;
+
+  // Garantir NUL-terminator quando o buffer for usado como C-string (caso do LWT no CONNECT).
+  out[outLen] = '\0';
+  return true;
+}
+
+static bool publishPresenceOnline() {
+  char payload[256];
+  uint32_t len = 0;
+
+  bool okJson = buildPresenceJson("online", "birth", payload, sizeof(payload), len);
+  if (!okJson) {
+    LOGE("[PRESENCE] Falha ao montar JSON online.");
+    return false;
+  }
+
+  bool ok = mqttPublish(g_topicPresence, (const uint8_t*)payload, len, PRESENCE_RETAIN);
+  LOGI("[PRESENCE] Published ONLINE (retained=%d) ok=%d topic=%s", (int)PRESENCE_RETAIN, (int)ok, g_topicPresence);
   return ok;
 }
 
@@ -982,9 +1055,10 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   LOGI("[MQTT] command_id=%s action=%s duration=%ld", cmdId,
        actionLocal[0] ? actionLocal : "(null)", (long)duration);
 
+  // ADJUSTED: Troca status "error" por "failed" (padronizacao)
   if (!actionLocal[0]) {
     LOGE("[MQTT] Campo 'action' ausente.");
-    publishCommandAck(cmdId, "error", nullptr, -1, "invalid_payload", "missing_action");
+    publishCommandAck(cmdId, "failed", nullptr, -1, "invalid_payload", "missing_action");
     return;
   }
 
@@ -1014,7 +1088,8 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
       if (nowOn) {
         publishCommandAck(cmdId, "started", action, duration, nullptr, nullptr);
       } else {
-        publishCommandAck(cmdId, "error", action, duration, "valve_not_on", "valve_failed_to_start");
+        // ADJUSTED: Status "failed" ao inves de "error"
+        publishCommandAck(cmdId, "failed", action, duration, "valve_not_on", "valve_failed_to_start");
       }
     } else {
       LOGI("[COMANDO] STOP imediato (duration=0)");
@@ -1055,7 +1130,8 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     publishCommandAck(doneCmd, "done", "off", 0, wasOn ? "manual_off" : "already_off", nullptr);
   } else {
     LOGW("[COMANDO] ação desconhecida: %s", action);
-    publishCommandAck(cmdId, "error", action, duration, "unknown_action", "unsupported_action");
+    // ADJUSTED: Status "failed" ao inves de "error"
+    publishCommandAck(cmdId, "failed", action, duration, "unknown_action", "unsupported_action");
   }
 }
 
@@ -1218,9 +1294,8 @@ static void taskNetworkStorage(void *pvParameters) {
   client.setKeepAlive(60);
   client.setSocketTimeout(10);
 
-  LOGI("[AWS] PUB=%s | SUB=%s | ACK=%s | endpoint=%s:%u | buf=%u",
-       g_topicTelemetry, g_topicCommand, g_topicAck, AWS_IOT_ENDPOINT, MQTT_PORT, (unsigned)client.getBufferSize());
-
+  LOGI("[AWS] TEL=%s | CMD=%s | ACK=%s | PRES=%s | endpoint=%s:%u | buf=%u",
+       g_topicTelemetry, g_topicCommand, g_topicAck, g_topicPresence, AWS_IOT_ENDPOINT, MQTT_PORT, (unsigned)client.getBufferSize());
   BackoffState wifiB, mqttB;
   uint32_t lastNtpAttempt = 0;
 
@@ -1268,7 +1343,8 @@ static void taskNetworkStorage(void *pvParameters) {
 
     if (doAck && ackCmd[0] != '\0') {
       if (ackIsError) {
-        publishCommandAck(ackCmd, "error", "off", 0, ackReason, "failsafe");
+        // ADJUSTED: Status "failed" ao inves de "error"
+        publishCommandAck(ackCmd, "failed", "off", 0, ackReason, "failsafe");
       } else {
         publishCommandAck(ackCmd, "done", "off", 0, ackReason, nullptr);
       }
@@ -1312,16 +1388,30 @@ static void taskNetworkStorage(void *pvParameters) {
         if (backoffCanTry(mqttB)) {
           uint32_t d = backoffDelay(1000, 20000, mqttB.attempt);
           LOGI("[AWS] Conectando MQTT (backoff=%lums)...", (unsigned long)d);
+          // >>> PRESENCE (LWT + Birth)
+          // LWT: se o device cair sem DISCONNECT, o broker publica "offline" (retained) neste tópico.
+          char willPayload[256];
+          uint32_t willLen = 0;
+          bool willOk = buildPresenceJson("offline", "lwt", willPayload, sizeof(willPayload), willLen);
+          if (!willOk) {
+            // fallback mínimo (ainda retained)
+            strncpy(willPayload, "offline", sizeof(willPayload) - 1);
+            willPayload[sizeof(willPayload) - 1] = '\0';
+          }
 
-          bool ok = client.connect(THINGNAME);
+          bool ok = client.connect(THINGNAME, g_topicPresence, PRESENCE_QOS, PRESENCE_RETAIN, willPayload);
           if (ok) {
             backoffReset(mqttB);
             g_mqttConnected = true;
             LOGI("[AWS] MQTT conectado. state=%d(%s)", client.state(), mqttStateName(client.state()));
 
-            // >>> SUBSCRIBE NO TÓPICO POR DISPOSITIVO
-            bool subOk = client.subscribe(g_topicCommand);
-            LOGI("[AWS] Subscribed: %s (ok=%d)", g_topicCommand, (int)subOk);
+            // >>> SUBSCRIBE NO TÓPICO POR DISPOSITIVO (AGORA COM QoS 1)
+            // ADJUSTED: Added QoS 1 parameter
+            bool subOk = client.subscribe(g_topicCommand, 1);
+            LOGI("[AWS] Subscribed: %s (ok=%d, qos=1)", g_topicCommand, (int)subOk);
+
+            // Birth message: publica "online" (retained) para sobrescrever qualquer "offline" antigo.
+            publishPresenceOnline();
           } else {
             int st = client.state();
             LOGE("[AWS] MQTT connect FAIL: state=%d(%s)", st, mqttStateName(st));
