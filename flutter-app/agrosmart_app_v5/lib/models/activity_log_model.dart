@@ -9,10 +9,12 @@ class ActivityLogModel {
   final String source;  
   final String message; 
   
-  // NOVOS CAMPOS PARA OS DETALHES AVANÇADOS
   final String? result; 
   final String? reason;
   final Map<String, dynamic>? details;
+  
+  // NOVO CAMPO: Para pegarmos a assinatura do comando
+  final String? commandId;
 
   ActivityLogModel({
     required this.id,
@@ -23,6 +25,7 @@ class ActivityLogModel {
     this.result,
     this.reason,
     this.details,
+    this.commandId,
   });
 
   factory ActivityLogModel.fromFirestore(Map<String, dynamic> data, String docId) {
@@ -35,6 +38,22 @@ class ActivityLogModel {
       result: data['result'],
       reason: data['reason'],
       details: data['details'] as Map<String, dynamic>?,
+      commandId: data['command_id'], // Lendo o ID que vem do Firestore
     );
+  }
+
+  // --- REGRAS INTELIGENTES ---
+  
+  // É um agendamento se a fonte for 'schedule' OU se for um comando cujo ID começa com 'sched-'
+  bool get isFromSchedule {
+    if (source == 'schedule') return true;
+    if (source == 'command' && commandId != null && commandId!.startsWith('sched-')) return true;
+    return false;
+  }
+
+  // É um comando manual se a fonte for 'command' e NÃO for de um agendamento
+  bool get isManualCommand {
+    if (source == 'command' && !isFromSchedule) return true;
+    return false;
   }
 }

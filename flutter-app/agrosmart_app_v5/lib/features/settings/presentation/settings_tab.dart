@@ -58,9 +58,8 @@ class _SettingsTabState extends State<SettingsTab> {
 
     setState(() {
       _targetMoisture = settings.targetMoisture;
-      double dur = settings.manualDuration.toDouble();
-      if (dur < 1.0) dur = 5.0;
-      _manualDuration = dur;
+      // Ajusta e limita para 15 minutos no máximo de forma segura
+      _manualDuration = settings.manualDuration.toDouble().clamp(1.0, 15.0);
       _timezoneOffset = settings.timezoneOffset;
       _enableWeatherControl = settings.enableWeatherControl;
       _latitude = settings.latitude;
@@ -186,7 +185,6 @@ class _SettingsTabState extends State<SettingsTab> {
   Widget build(BuildContext context) {
     if (!_isInitialized) return const Center(child: CircularProgressIndicator());
 
-    // Removido o Scaffold desnecessário, usando apenas um Container com a cor de fundo
     return Container(
       color: AppColors.background,
       child: SingleChildScrollView(
@@ -244,7 +242,9 @@ class _SettingsTabState extends State<SettingsTab> {
                       ),
                       Slider(
                         value: _manualDuration,
-                        min: 1, max: 60, divisions: 59,
+                        min: 1, 
+                        max: 15, // Ajuste do limite máximo de 60 para 15
+                        divisions: 14, // 15 - 1
                         activeColor: AppColors.warning, thumbColor: AppColors.warning,
                         label: "${_manualDuration.toInt()} min",
                         onChanged: (val) => setState(() => _manualDuration = val),

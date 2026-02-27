@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import '../../../models/device_model.dart';
 import '../../../models/schedule_model.dart';
 import '../../../services/schedules_service.dart';
-import '../../../screens/schedule_form_screen.dart'; 
+import 'schedule_form_screen.dart'; 
 import '../../events/presentation/events_log_view.dart';
 import '../../../core/theme/app_colors.dart'; 
 

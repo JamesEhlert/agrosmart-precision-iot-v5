@@ -4,8 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../../../../models/device_model.dart';
-import '../../../../../screens/weather_screen.dart';
 import '../../../../../core/theme/app_colors.dart';
+// IMPORT ATUALIZADO (agora aponta para a nova feature de weather)
+import '../../../weather/presentation/weather_screen.dart';
 
 class WeatherSummaryCard extends StatelessWidget {
   final DeviceModel device;

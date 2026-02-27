@@ -14,7 +14,6 @@ import '../../../models/telemetry_model.dart';
 import '../../../services/aws_service.dart';
 import '../../../core/theme/app_colors.dart';
 
-// Importando os novos widgets isolados
 import 'widgets/weather_summary_card.dart';
 import 'widgets/sensor_cards.dart';
 
@@ -191,7 +190,8 @@ class _MonitorTabState extends State<MonitorTab> {
   }
 
   Future<void> _startManualIrrigation() async {
-    final minutes = widget.device.settings.manualDuration;
+    // Clamping defensivo no momento do envio
+    final minutes = widget.device.settings.manualDuration.clamp(1, 15);
     if (minutes <= 0) return;
     final durationSeconds = minutes * 60;
 
@@ -362,7 +362,8 @@ class _MonitorTabState extends State<MonitorTab> {
                                 children: [
                                   Icon(_isIrrigating ? Icons.stop_circle : Icons.water),
                                   const SizedBox(width: 8),
-                                  Text(_isIrrigating ? "PARAR (${_formatMmSs(_remainingSeconds)})" : "IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration} min)"),
+                                  // Assegura que o limite defensivo visual tb está em 15
+                                  Text(_isIrrigating ? "PARAR (${_formatMmSs(_remainingSeconds)})" : "IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration.clamp(1, 15)} min)"),
                                 ],
                               ),
                       ),

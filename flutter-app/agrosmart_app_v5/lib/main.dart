@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
-import 'screens/login_screen.dart';
-import 'features/dashboard/presentation/dashboard_page.dart'; 
 
-// Importando o nosso novo Design System
+// Import atualizado para a nova pasta
+import 'features/auth/presentation/login_screen.dart';
+import 'features/dashboard/presentation/dashboard_page.dart'; 
 import 'core/theme/app_theme.dart'; 
 
 void main() async {
@@ -26,7 +26,6 @@ class AgroSmartApp extends StatelessWidget {
     return MaterialApp(
       title: 'AgroSmart V5',
       debugShowCheckedModeBanner: false,
-      // Aplicando o tema centralizado. Todas as telas agora herdam daqui!
       theme: AppTheme.lightTheme, 
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),

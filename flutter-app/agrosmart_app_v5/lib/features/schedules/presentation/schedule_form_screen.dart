@@ -1,9 +1,10 @@
-// ARQUIVO: lib/screens/schedule_form_screen.dart
+// ARQUIVO: lib/features/schedules/presentation/schedule_form_screen.dart
 
 import 'package:flutter/material.dart';
-import '../models/schedule_model.dart';
-import '../services/schedules_service.dart';
-import '../core/theme/app_colors.dart'; // Design System
+
+import '../../../models/schedule_model.dart';
+import '../../../services/schedules_service.dart';
+import '../../../core/theme/app_colors.dart';
 
 class ScheduleFormScreen extends StatefulWidget {
   final String deviceId;
@@ -40,7 +41,8 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
     if (widget.scheduleToEdit != null) {
       final s = widget.scheduleToEdit!;
       _labelController.text = s.label;
-      _duration = s.durationMinutes.toDouble();
+      // Garante que agendamentos legados não passem de 15 no UI
+      _duration = s.durationMinutes.toDouble().clamp(1.0, 15.0);
       _selectedDays.addAll(s.days);
       
       try {
@@ -56,7 +58,9 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
     if (!_formKey.currentState!.validate()) return;
     
     if (_selectedDays.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Selecione pelo menos um dia."), backgroundColor: AppColors.errorAccent));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Selecione pelo menos um dia."), backgroundColor: AppColors.errorAccent)
+      );
       return;
     }
 
@@ -89,14 +93,36 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
 
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: AppColors.error));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Erro: $e"), backgroundColor: AppColors.error)
+      );
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _pickTime() async {
-    final picked = await showTimePicker(context: context, initialTime: _selectedTime);
+    final picked = await showTimePicker(
+      context: context, 
+      initialTime: _selectedTime,
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: AppColors.primary, 
+              onPrimary: AppColors.textLight, 
+              onSurface: AppColors.textPrimary,
+            ),
+            textButtonTheme: TextButtonThemeData(
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primary, 
+              ),
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
     if (picked != null) setState(() => _selectedTime = picked);
   }
 
@@ -163,7 +189,11 @@ class _ScheduleFormScreenState extends State<ScheduleFormScreen> {
                 children: [
                   Expanded(
                     child: Slider(
-                      value: _duration, min: 1, max: 60, divisions: 59, label: "${_duration.toInt()} min", 
+                      value: _duration, 
+                      min: 1, 
+                      max: 15, // Ajuste do limite máximo de 60 para 15
+                      divisions: 14, // 15 - 1
+                      label: "${_duration.toInt()} min", 
                       activeColor: AppColors.primary,
                       onChanged: (val) => setState(() => _duration = val),
                     ),

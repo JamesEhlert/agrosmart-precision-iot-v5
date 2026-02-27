@@ -309,7 +309,8 @@ class AwsService {
   String _normalizeStatus(dynamic raw) {
     if (raw == null) return "unknown";
     final s = raw.toString().trim().toLowerCase();
-    if (s == "received" || s == "started" || s == "done" || s == "error") {
+    // AJUSTE: Adicionado o "failed" na lista de permitidos
+    if (s == "received" || s == "started" || s == "done" || s == "failed" || s == "error") {
       return s;
     }
     return s.isEmpty ? "unknown" : s;
@@ -375,7 +376,8 @@ class AwsService {
       (event) {
         if (event == null) return;
         final st = event.status.toLowerCase();
-        if (st == 'done' || st == 'error') {
+        // AJUSTE: Parar de escutar se o status for failed, error ou done
+        if (st == 'done' || st == 'failed' || st == 'error') {
           if (!completer.isCompleted) completer.complete(event);
           timer?.cancel();
           sub?.cancel();
@@ -461,7 +463,8 @@ class AwsService {
     sub = watchAckHistoryForCommand(deviceId: deviceId, commandId: commandId).listen((events) {
       for (final e in events) {
         final st = e.status.toLowerCase();
-        if (st == 'done' || st == 'error') {
+        // AJUSTE: Parar de escutar se o status for failed, error ou done
+        if (st == 'done' || st == 'failed' || st == 'error') {
           if (!completer.isCompleted) {
             completer.complete(e);
           }

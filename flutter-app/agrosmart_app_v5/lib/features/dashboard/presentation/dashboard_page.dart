@@ -5,11 +5,10 @@ import 'package:flutter/material.dart';
 import '../../../models/device_model.dart';
 import '../../../services/device_service.dart';
 import '../../../services/auth_service.dart';
+import '../../../core/theme/app_colors.dart'; // <-- Novo import do Design System
 
 import '../../settings/presentation/settings_tab.dart';
 import '../../history/presentation/history_tab.dart';
-
-
 import '../../monitor/presentation/monitor_tab.dart';
 import '../../schedules/presentation/schedules_tab.dart';
 import 'widgets/device_picker_sheet.dart';
@@ -80,7 +79,8 @@ class _DashboardPageState extends State<DashboardPage> {
                   setState(() => _selectedDeviceId = idController.text.trim());
                 }
               } catch (e) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: Colors.red));
+                // SUBSTITUÍDO: Colors.red -> AppColors.error
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: AppColors.error));
               }
             },
             child: const Text("Adicionar"),
@@ -120,7 +120,7 @@ class _DashboardPageState extends State<DashboardPage> {
             final device = snapshotDevice.data ?? DeviceModel(id: _selectedDeviceId!, isOnline: false, settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: "Carregando...", timezoneOffset: -3, capabilities: []));
             
             final List<Widget> pages = [
-              MonitorTab(device: device), // O Monitor agora cuida de si mesmo!
+              MonitorTab(device: device), 
               SchedulesTab(device: device),
               HistoryTab(device: device),
               SettingsTab(device: device),
@@ -136,24 +136,35 @@ class _DashboardPageState extends State<DashboardPage> {
                     children: [
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(color: Colors.green[700], borderRadius: BorderRadius.circular(20)),
+                        // SUBSTITUÍDO: Colors.green[700] -> AppColors.primary
+                        decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(20)),
                         child: Row(
                           children: [
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(device.settings.deviceName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                Text(device.settings.deviceName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.textLight)),
                                 Row(
                                   children: [
-                                    Container(width: 8, height: 8, decoration: BoxDecoration(color: device.isOnline ? Colors.lightGreenAccent : Colors.redAccent, shape: BoxShape.circle)),
+                                    // SUBSTITUÍDO: Cores de status de conexão usando AppColors
+                                    Container(
+                                      width: 8, height: 8, 
+                                      decoration: BoxDecoration(
+                                        color: device.isOnline ? AppColors.success : AppColors.errorAccent, 
+                                        shape: BoxShape.circle
+                                      )
+                                    ),
                                     const SizedBox(width: 4),
-                                    Text("${device.id} • ${device.isOnline ? 'Online' : 'Offline'}", style: const TextStyle(fontSize: 10, color: Colors.white70)),
+                                    Text(
+                                      "${device.id} • ${device.isOnline ? 'Online' : 'Offline'}", 
+                                      style: TextStyle(fontSize: 10, color: AppColors.textLight.withValues(alpha: 0.8))
+                                    ),
                                   ],
                                 ),
                               ],
                             ),
                             const SizedBox(width: 8),
-                            const Icon(Icons.arrow_drop_down, color: Colors.white),
+                            const Icon(Icons.arrow_drop_down, color: AppColors.textLight),
                           ],
                         ),
                       ),

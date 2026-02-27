@@ -1,7 +1,10 @@
-// ARQUIVO: lib/screens/signup_screen.dart
+// ARQUIVO: lib/features/auth/presentation/signup_screen.dart
 
 import 'package:flutter/material.dart';
-import '../services/auth_service.dart';
+
+// Imports ajustados
+import '../../../services/auth_service.dart';
+import '../../../core/theme/app_colors.dart'; 
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -34,13 +37,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
         _nameController.text.trim(),
       );
       
-      // A navegação agora acontece automaticamente pelo StreamBuilder no main.dart!
-      // Se der certo, ele vai direto para o Dashboard.
-      
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Erro ao cadastrar: $e"), backgroundColor: Colors.red),
+          SnackBar(content: Text("Erro ao cadastrar: $e"), backgroundColor: AppColors.error),
         );
       }
     } finally {
@@ -51,12 +51,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Criar Conta")),
+      appBar: AppBar(
+        title: const Text("Criar Conta"),
+        backgroundColor: AppColors.primary,
+        foregroundColor: AppColors.textLight,
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            const Icon(Icons.person_add, size: 80, color: Colors.green),
+            const Icon(Icons.person_add, size: 80, color: AppColors.primary),
             const SizedBox(height: 20),
             TextField(
               controller: _nameController,
@@ -80,9 +84,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
               height: 50,
               child: ElevatedButton(
                 onPressed: _isLoading ? null : _register,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                 child: _isLoading
-                    ? const CircularProgressIndicator(color: Colors.white)
+                    ? const CircularProgressIndicator(color: AppColors.textLight)
                     : const Text("CADASTRAR"),
               ),
             ),

@@ -1,12 +1,12 @@
-// ARQUIVO: lib/screens/login_screen.dart
+// ARQUIVO: lib/features/auth/presentation/login_screen.dart
 
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../services/auth_service.dart';
-import 'signup_screen.dart';
 
-// Importando as cores centralizadas para usar nos ícones e mensagens
-import '../core/theme/app_colors.dart'; 
+// Imports ajustados para subir os níveis corretos
+import '../../../services/auth_service.dart';
+import '../../../core/theme/app_colors.dart'; 
+import 'signup_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});

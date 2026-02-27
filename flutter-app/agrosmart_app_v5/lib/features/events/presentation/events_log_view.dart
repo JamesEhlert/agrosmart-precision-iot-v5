@@ -35,8 +35,8 @@ class _EventsLogViewState extends State<EventsLogView> {
 
   List<ActivityLogModel> get _filteredLogs {
     if (_mainFilter == 'all') return _logs;
-    if (_mainFilter == 'schedule') return _logs.where((l) => l.source == 'schedule').toList();
-    if (_mainFilter == 'command') return _logs.where((l) => l.source == 'command').toList();
+    if (_mainFilter == 'schedule') return _logs.where((l) => l.isFromSchedule).toList();
+    if (_mainFilter == 'command') return _logs.where((l) => l.isManualCommand).toList();
     if (_mainFilter == 'alerts') return _logs.where((l) => l.type == 'error' || l.type == 'skipped' || l.source == 'weather_ai').toList();
     return _logs;
   }
@@ -71,28 +71,36 @@ class _EventsLogViewState extends State<EventsLogView> {
   IconData _getTypeIcon(ActivityLogModel log) {
     if (log.type == 'error') return Icons.error_outline;
     if (log.type == 'skipped') return Icons.skip_next;
-    if (log.source == 'command') return Icons.touch_app;
-    if (log.source == 'schedule') return Icons.timer;
+    
+    if (log.isManualCommand) return Icons.touch_app;
+    if (log.isFromSchedule) return Icons.timer; 
     if (log.source == 'weather_ai') return Icons.cloud_off;
+    
     return Icons.info_outline;
   }
 
   Color _getTypeColor(ActivityLogModel log) {
     if (log.type == 'error') return AppColors.error;
     if (log.type == 'skipped') return AppColors.warning;
-    if (log.source == 'command') return AppColors.info;
-    if (log.source == 'schedule') return AppColors.success;
+    
+    if (log.isManualCommand) return AppColors.info;
+    if (log.isFromSchedule) return AppColors.success;
+    
     return AppColors.textSecondary;
   }
 
-  // --- FUNÇÕES DE TRADUÇÃO PARA USUÁRIO FINAL ---
-  String _translateSource(String source) {
-    switch (source) {
-      case 'command': return 'Acionamento Manual (App)';
-      case 'schedule': return 'Agendamento Automático';
+  String _translateSource(ActivityLogModel log) {
+    if (log.isManualCommand) return 'Acionamento Manual (App)';
+    
+    if (log.isFromSchedule) {
+      if (log.source == 'command') return 'Conclusão de Agendamento';
+      return 'Disparo de Agendamento';
+    }
+    
+    switch (log.source) {
       case 'weather_ai': return 'Previsão do Tempo Inteligente';
       case 'system': return 'Sistema de Segurança';
-      default: return source.toUpperCase();
+      default: return log.source.toUpperCase();
     }
   }
 
@@ -115,17 +123,35 @@ class _EventsLogViewState extends State<EventsLogView> {
       case 'valve_not_on': return 'A válvula não ligou fisicamente';
       case 'failsafe_no_deadline': 
       case 'failsafe': return 'Desligamento por segurança (Failsafe)';
-      default: return reason; // Retorna o texto original se não houver tradução
+      default: return reason; 
     }
+  }
+
+  // --- TRADUTOR VISUAL DE SEGUNDOS PARA MINUTOS ---
+  String _formatLogMessage(String message) {
+    // Procura na string tudo que seguir o formato "por XXX s" gerado pelo Python
+    return message.replaceAllMapped(RegExp(r'por (\d+)\s*s'), (match) {
+      final int secs = int.parse(match.group(1)!);
+      final int mins = secs ~/ 60;
+      final int rem = secs % 60;
+      
+      if (mins == 0) return 'por $secs s'; // Se for muito rápido (<1min)
+      if (rem == 0) return 'por $mins min'; // Segundos arredondados
+      return 'por $mins min e $rem s'; // Mostra os quebrados se houver
+    });
   }
 
   Widget _buildChipsHeader() {
     int count(bool Function(ActivityLogModel) test) => _logs.where(test).length;
 
-    Widget choice(String key, String label, int count) {
+    int scheduleCount = count((l) => l.isFromSchedule);
+    int manualCount = count((l) => l.isManualCommand);
+    int alertCount = count((l) => l.type == 'error' || l.type == 'skipped' || l.source == 'weather_ai');
+
+    Widget choice(String key, String label, int qty) {
       return ChoiceChip(
         selected: _mainFilter == key,
-        label: Text('$label ($count)'),
+        label: Text('$label ($qty)'),
         selectedColor: AppColors.primaryLight,
         onSelected: (v) { if (v) setState(() => _mainFilter = key); },
       );
@@ -139,16 +165,15 @@ class _EventsLogViewState extends State<EventsLogView> {
           spacing: 8,
           children: [
             choice('all', 'Todos', _logs.length),
-            choice('schedule', 'Agendas', count((l) => l.source == 'schedule')),
-            choice('command', 'Manuais', count((l) => l.source == 'command')),
-            choice('alerts', 'Alertas', count((l) => l.type == 'error' || l.type == 'skipped' || l.source == 'weather_ai')),
+            choice('schedule', 'Agendas', scheduleCount),
+            choice('command', 'Manuais', manualCount),
+            choice('alerts', 'Alertas', alertCount),
           ],
         ),
       ),
     );
   }
 
-  // --- NOVO LAYOUT DO POPUP DE DETALHES ---
   void _showLogDetails(ActivityLogModel log) {
     showDialog(
       context: context,
@@ -166,17 +191,17 @@ class _EventsLogViewState extends State<EventsLogView> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(log.message, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+              // Aplica o formatador aqui no pop-up
+              Text(_formatLogMessage(log.message), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
               const Divider(height: 24),
               
               _buildDetailRow(Icons.calendar_today, 'Data', DateFormat('dd/MM/yyyy • HH:mm:ss').format(log.timestamp)),
-              _buildDetailRow(Icons.settings_remote, 'Origem', _translateSource(log.source)),
+              _buildDetailRow(Icons.settings_remote, 'Origem', _translateSource(log)),
               _buildDetailRow(Icons.verified, 'Resultado', _translateResult(log.result, log.type)),
               
               if (log.reason != null || log.result == 'success')
                 _buildDetailRow(Icons.info_outline, 'Motivo', _translateReason(log.reason)),
                 
-              // Mostra o sinal de Wi-Fi apenas se a placa tiver enviado esse dado!
               if (log.details?['sys']?['rssi'] != null)
                 _buildDetailRow(Icons.wifi, 'Sinal da Placa', '${log.details!['sys']['rssi']} dBm'),
             ],
@@ -192,7 +217,6 @@ class _EventsLogViewState extends State<EventsLogView> {
     );
   }
 
-  // Helper para desenhar as linhas do Popup
   Widget _buildDetailRow(IconData icon, String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -286,9 +310,9 @@ class _EventsLogViewState extends State<EventsLogView> {
               backgroundColor: _getTypeColor(log).withValues(alpha: 0.2),
               child: Icon(_getTypeIcon(log), color: _getTypeColor(log)),
             ),
-            title: Text(log.message, maxLines: 2, overflow: TextOverflow.ellipsis),
-            // A legenda da lista também ganha a tradução bonitinha
-            subtitle: Text('${DateFormat('dd/MM HH:mm').format(log.timestamp)} • ${_translateSource(log.source)}'),
+            // Aplica o formatador aqui na lista
+            title: Text(_formatLogMessage(log.message), maxLines: 2, overflow: TextOverflow.ellipsis),
+            subtitle: Text('${DateFormat('dd/MM HH:mm').format(log.timestamp)} • ${_translateSource(log)}'),
             onTap: () => _showLogDetails(log),
           );
         },
