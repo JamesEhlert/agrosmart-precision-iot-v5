@@ -3,29 +3,16 @@
  * NOME DO PROJETO: AGROSMART PRECISION SYSTEM (AgroSmart Precision IoT V5)
  * ===================================================================================
  * AUTOR: James Rafael Ehlert
- * DATA: 11/02/2026
- * VERSÃO: 5.17.5 (Adjusted: Standardized ACK status + QoS 1 Subscribe)
+ * DATA: 27/02/2026
+ * VERSÃO: 5.18.0 (Stable Garden Prototype - Schema V2)
  * ===================================================================================
  *
  * MOTIVAÇÃO
- * - Corrigir perda de dados no flush do SD (reset/WDT ou falha de I/O no meio da compactação)
- * - Melhorar diagnósticos de MQTT publish falhando (buffer PubSubClient, estado MQTT/TLS)
- * - Evoluir para "produto": tópicos MQTT por dispositivo + ACK ponta-a-ponta
- *
- * PRINCIPAIS MELHORIAS (RESUMO)
- * 1) Store-and-forward NDJSON append-only (cada amostra offline vira 1 linha)
- * 2) Flush com offset persistido em NVS (retoma após reboot; avança SOMENTE após publish OK)
- * 3) Compactação crash-safe (TMP + BAK + renames atômicos)
- * 4) SD protegido por mutex + loops com vTaskDelay/yield (mitiga WDT)
- * 5) PubSubClient com buffer maior + publish com length + logs detalhados (state, TLS, buffer)
- * 6) Telemetry_id estável (device_id + timestamp + seq) e seq persistida em NVS
- * 7) MQTT topics por dispositivo.
- * 8) AJUSTE RECENTE: Status de ACK padronizados ("failed" em vez de "error") e Subscribe com QoS 1.
- *
- * OBS IMPORTANTES
- * - A telemetria é publicada em MQTT (AWS IoT Core). Uma IoT Rule grava no DynamoDB.
- * - Para stress-test com 10s/20s, use build flag DEFAULT_TELEMETRY_INTERVAL_MS no platformio.ini.
- * - Se NVS já tiver um intervalo gravado, ele prevalece. Para forçar defaults: pio run -t erase.
+ * - Versão congelada para instalação no jardim.
+ * - Adição do Schema V2 de Telemetria (Diagnósticos de Boot, Rede e Sensores).
+ * - Arredondamento de casas decimais para manter o DynamoDB limpo.
+ * - Placeholder para futura bateria.
+ * - Manter INTACTA toda a lógica de store-and-forward SD e Fail-safe da válvula.
  */
 
 #include <Arduino.h>
@@ -34,6 +21,7 @@
 #include <SD.h>
 #include <RTClib.h>
 #include <Adafruit_AHTX0.h>
+#include <math.h> // <-- ADICIONADO PARA ARREDONDAMENTO
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -57,7 +45,7 @@
 // BUILD FLAGS / DEFAULTS (definidos no platformio.ini via build_flags)
 // ===================================================================================
 #ifndef FW_VERSION
-  #define FW_VERSION "5.17.5"
+  #define FW_VERSION "5.18.0" // <-- ATUALIZADO
 #endif
 
 #ifndef DEFAULT_TELEMETRY_INTERVAL_MS
@@ -80,7 +68,7 @@
 #endif
 
 #ifndef TELEMETRY_SCHEMA_VERSION
-  #define TELEMETRY_SCHEMA_VERSION 1
+  #define TELEMETRY_SCHEMA_VERSION 2 // <-- ATUALIZADO PARA V2
 #endif
 
 // ===================================================================================
@@ -156,7 +144,7 @@ static const char* PENDING_BAK_FILENAME  = "/pending_telemetry.bak";
 static const char* NTP_SERVER = "pool.ntp.org";
 
 // Store-and-forward limits
-static const size_t   PENDING_LINE_MAX            = 1200;                // NDJSON line max (bytes)
+static const size_t   PENDING_LINE_MAX            = 1500;                // AUMENTADO PARA O SCHEMA V2
 static const uint32_t MAX_PENDING_BYTES           = 5UL * 1024UL * 1024UL; // 5MB
 static const uint32_t COMPACT_THRESHOLD_BYTES     = 64UL * 1024UL;        // compacta se offset >= 64KB
 static const uint32_t SD_REINIT_COOLDOWN_MS       = 30000;
@@ -238,6 +226,10 @@ static const char* K_SOIL_WET = "soil_wet";
 static const char* K_SEQ      = "tele_seq";
 static const char* K_PEND_OFF = "pend_off";
 
+// ---> NOVO: DIAGNÓSTICOS NVS
+static const char* K_BOOT_CNT = "boot_cnt";
+static const char* K_LAST_TS  = "last_ts";
+
 static RuntimeConfig g_cfg;
 static uint32_t g_telemetrySeq = 0;
 static uint32_t g_pendingOffset = 0;
@@ -248,6 +240,19 @@ static const uint32_t OFF_PERSIST_EVERY = 5;
 
 // SD reinit
 static uint32_t g_sdLastReinitMs = 0;
+
+// ---> NOVO: VARIÁVEIS DE DIAGNÓSTICO
+static uint32_t g_bootCount = 0;
+static char     g_bootId[17] = {0};          
+static const char* g_resetReason = "unknown";
+static uint32_t g_wifiDisconnects = 0;
+static uint32_t g_mqttReconnects  = 0;
+static uint32_t g_sensorErrAHT    = 0;
+
+static uint32_t g_lastTelemetryTs = 0;       
+static uint32_t g_tsDirty = 0;
+static const uint32_t TS_PERSIST_EVERY = 20; 
+static const char* g_lastTsSource = "rtc";   
 
 // ===================================================================================
 // 4) HELPERS (tempo wrap-safe / mutex)
@@ -265,7 +270,7 @@ static void unlockSem(SemaphoreHandle_t sem) {
 }
 
 // ===================================================================================
-// 5) CONFIG / NVS
+// 5) CONFIG / NVS / BOOT DIAGNOSTICS
 // ===================================================================================
 static RuntimeConfig cfgGet() {
   RuntimeConfig c;
@@ -289,9 +294,9 @@ static void printConfig() {
   RuntimeConfig c = cfgGet();
   LOGI("FW=%s | THING=%s | schema=%d", FW_VERSION, THINGNAME, TELEMETRY_SCHEMA_VERSION);
   LOGI("[MQTT] telemetry=%s | command=%s | ack=%s | presence=%s", g_topicTelemetry, g_topicCommand, g_topicAck, g_topicPresence);
-  LOGI("[NVS] tele_int=%lu ms, soil(dry=%d wet=%d), seq=%lu, pend_off=%lu",
+  LOGI("[NVS] tele_int=%lu ms, soil(dry=%d wet=%d), seq=%lu, pend_off=%lu, boot_cnt=%lu",
        (unsigned long)c.telemetry_interval_ms, c.soil_raw_dry, c.soil_raw_wet,
-       (unsigned long)g_telemetrySeq, (unsigned long)g_pendingOffset);
+       (unsigned long)g_telemetrySeq, (unsigned long)g_pendingOffset, (unsigned long)g_bootCount);
 }
 
 static void loadFromNVS() {
@@ -322,6 +327,10 @@ static void loadFromNVS() {
 
   g_telemetrySeq  = p.getUInt(K_SEQ, 0);
   g_pendingOffset = p.getUInt(K_PEND_OFF, 0);
+  
+  // ---> NOVO: LÊ DIAGNÓSTICOS DO NVS
+  g_bootCount     = p.getUInt(K_BOOT_CNT, 0);
+  g_lastTelemetryTs = p.getUInt(K_LAST_TS, 0);
 
   p.end();
   cfgSet(c);
@@ -348,6 +357,79 @@ static void persistOffsetIfNeeded(bool force=false) {
   p.end();
   g_offDirty = 0;
   LOGD("[NVS] pending_offset persistido: %lu", (unsigned long)g_pendingOffset);
+}
+
+// ---> NOVO: FUNÇÕES DE DIAGNÓSTICO
+static const char* resetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "poweron";
+    case ESP_RST_EXT:       return "ext_reset";
+    case ESP_RST_SW:        return "sw_reset";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:   return "int_wdt";
+    case ESP_RST_TASK_WDT:  return "task_wdt";
+    case ESP_RST_WDT:       return "other_wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_SDIO:      return "sdio";
+    default:                return "unknown";
+  }
+}
+
+static void persistBootCount() {
+  Preferences p;
+  if (!p.begin(NVS_NS, false)) return;
+  p.putUInt(K_BOOT_CNT, g_bootCount);
+  p.end();
+}
+
+static void persistLastTsIfNeeded(bool force=false) {
+  if (!force && g_tsDirty < TS_PERSIST_EVERY) return;
+
+  Preferences p;
+  if (!p.begin(NVS_NS, false)) return;
+  p.putUInt(K_LAST_TS, g_lastTelemetryTs);
+  p.end();
+  g_tsDirty = 0;
+}
+
+static void initBootDiagnostics() {
+  g_resetReason = resetReasonName(esp_reset_reason());
+  g_bootCount++;
+  persistBootCount();
+  uint32_t r1 = (uint32_t)esp_random();
+  uint32_t r2 = (uint32_t)esp_random();
+  snprintf(g_bootId, sizeof(g_bootId), "%08lX%08lX", (unsigned long)r1, (unsigned long)r2);
+}
+
+static inline bool isValidEpoch(uint32_t ts) {
+  return ts >= 1577836800UL; // 2020-01-01
+}
+
+static uint32_t normalizeTelemetryTimestamp(uint32_t candidateEpoch) {
+  uint32_t ts = candidateEpoch;
+
+  if (isValidEpoch(ts)) {
+    if (ts <= g_lastTelemetryTs) {
+      g_lastTsSource = "rtc_adjusted";
+      ts = g_lastTelemetryTs + 1;
+    } else {
+      g_lastTsSource = "rtc";
+    }
+  } else {
+    // Fallback para evitar epoch 0 no DynamoDB
+    const uint32_t FALLBACK_EPOCH_BASE = 1700000000UL; 
+    uint32_t approx = FALLBACK_EPOCH_BASE + (uint32_t)(msNow() / 1000UL);
+    ts = approx;
+
+    g_lastTsSource = "approx";
+    if (ts <= g_lastTelemetryTs) ts = g_lastTelemetryTs + 1;
+  }
+
+  g_lastTelemetryTs = ts;
+  g_tsDirty++;
+  persistLastTsIfNeeded(false);
+  return ts;
 }
 
 // ===================================================================================
@@ -557,7 +639,8 @@ static bool buildPresenceJson(const char* state,
   if (!state || !out || outSz < 8) return false;
 
   // Importante: manter pequeno para não inchar o CONNECT (LWT via CONNECT packet).
-  StaticJsonDocument<256> doc;
+  // ---> NOVO: Aumentado para suportar Boot Diagnostics no Birth
+  StaticJsonDocument<384> doc;
   doc["device_id"] = THINGNAME;
   doc["state"] = state;                // "online" | "offline"
   doc["kind"]  = kind ? kind : "evt";   // "birth" | "lwt" | "evt"
@@ -575,6 +658,13 @@ static bool buildPresenceJson(const char* state,
   if (WiFi.status() == WL_CONNECTED) {
     String ip = WiFi.localIP().toString();
     doc["ip"] = ip;
+  }
+
+  // ---> NOVO: Diagnóstico no Birth
+  if (strcmp(kind, "birth") == 0) {
+    doc["boot_id"] = g_bootId;
+    doc["boot_count"] = g_bootCount;
+    doc["reset_reason"] = g_resetReason;
   }
 
   outLen = (uint32_t)serializeJson(doc, out, outSz);
@@ -607,7 +697,7 @@ static DateTime getSystemTime(); // forward declaration (definido na seção TIM
 
 static uint32_t epochNow() {
   DateTime nowUTC = getSystemTime();
-  return nowUTC.unixtime();
+  return normalizeTelemetryTimestamp(nowUTC.unixtime()); // ---> NOVO: Protegido
 }
 
 static void safeCopy(char* dst, size_t dstSz, const char* src) {
@@ -629,7 +719,8 @@ static bool publishCommandAck(const char* commandId,
   }
   if (!status || status[0] == '\0') status = "unknown";
 
-  StaticJsonDocument<384> doc;
+  // ---> NOVO: Aumentado para 512
+  StaticJsonDocument<512> doc;
   doc["device_id"] = THINGNAME;
   doc["command_id"] = commandId;
   doc["status"] = status;
@@ -640,12 +731,17 @@ static bool publishCommandAck(const char* commandId,
   sys["uptime_s"] = (uint32_t)(msNow()/1000UL);
   if (g_wifiConnected) sys["rssi"] = WiFi.RSSI();
 
+  // ---> NOVO: Diagnóstico no ACK
+  sys["boot_id"] = g_bootId;
+  sys["boot_count"] = g_bootCount;
+  sys["reset_reason"] = g_resetReason;
+
   if (action) doc["action"] = action;
   if (durationS >= 0) doc["duration"] = durationS;
   if (reason) doc["reason"] = reason;
   if (error) doc["error"] = error;
 
-  char out[512];
+  char out[640]; // ---> NOVO: Buffer aumentado
   size_t outLen = serializeJson(doc, out, sizeof(out));
   if (outLen == 0) {
     LOGE("[ACK] serializeJson falhou");
@@ -671,7 +767,8 @@ static void makeTelemetryId(char* out, size_t outSz, uint32_t ts, uint32_t seq) 
 }
 
 static bool buildTelemetryJson(const TelemetryData& d, char* out, size_t outSz, uint32_t& outLen) {
-  StaticJsonDocument<1024> doc;
+  // ---> NOVO: Aumentado para suportar Schema V2
+  StaticJsonDocument<1536> doc;
 
   doc["device_id"] = THINGNAME;
   doc["timestamp"] = d.timestamp;
@@ -689,12 +786,38 @@ static bool buildTelemetryJson(const TelemetryData& d, char* out, size_t outSz, 
   s["rain_raw"] = d.rain_raw;
   s["uv_index"] = d.uv_index;
 
+  // ---> NOVO: Snapshot de Válvula
+  bool valveOn = false;
+  uint32_t valveRemainingS = 0;
+  if (lockSem(valveMutex, 10)) {
+    valveOn = g_valveState;
+    if (valveOn && g_valveOffTimeMs != 0) {
+      uint32_t now = msNow();
+      if (g_valveOffTimeMs > now) {
+        valveRemainingS = (uint32_t)((g_valveOffTimeMs - now) / 1000UL);
+      }
+    }
+    unlockSem(valveMutex);
+  }
+
   JsonObject sys = doc.createNestedObject("sys");
   sys["fw"] = FW_VERSION;
   sys["schema"] = TELEMETRY_SCHEMA_VERSION;
   sys["uptime_s"] = (uint32_t)(msNow()/1000UL);
   sys["heap"] = (uint32_t)esp_get_free_heap_size();
   if (g_wifiConnected) sys["rssi"] = WiFi.RSSI();
+
+  // ---> NOVO: Injeção de Diagnósticos e Bateria
+  sys["boot_id"] = g_bootId;
+  sys["boot_count"] = g_bootCount;
+  sys["reset_reason"] = g_resetReason;
+  sys["ts_source"] = g_lastTsSource;
+  sys["wifi_disc"] = g_wifiDisconnects;
+  sys["mqtt_reconn"] = g_mqttReconnects;
+  sys["aht_err"] = g_sensorErrAHT;
+  sys["valve_state"] = valveOn ? 1 : 0;
+  if (valveOn) sys["valve_remaining_s"] = valveRemainingS;
+  sys["battery_present"] = false; // Placeholder para bateria futura
 
   uint32_t pendSz = sdFileSize(PENDING_FILENAME);
   sys["pending_bytes"] = pendSz;
@@ -967,7 +1090,7 @@ static inline uint32_t clampValveDurationS(int32_t requestedS) {
 }
 
 static void valveSetOffLocked() {
-  digitalWrite(PIN_VALVE, LOW);
+  digitalWrite(PIN_VALVE, HIGH); // <-- INVERTIDO AQUI PARA DESLIGAR (HIGH)
   g_valveState = false;
   g_valveOffTimeMs = 0;
   g_valveLastDebugMs = 0;
@@ -975,7 +1098,7 @@ static void valveSetOffLocked() {
 
 static void valveSetOnForLocked(uint32_t durationS) {
   if (durationS == 0) { valveSetOffLocked(); return; }
-  digitalWrite(PIN_VALVE, HIGH);
+  digitalWrite(PIN_VALVE, LOW); // <-- INVERTIDO AQUI PARA LIGAR (LOW)
   g_valveState = true;
   uint32_t now = msNow();
   g_valveOffTimeMs = now + durationS * 1000UL;
@@ -998,7 +1121,7 @@ static void valveApplyCommand(bool turnOn, int32_t durationS) {
     unlockSem(valveMutex);
   } else {
     LOGE("[FAIL-SAFE] Mutex da válvula ocupado. Forçando OFF (GPIO).");
-    digitalWrite(PIN_VALVE, LOW);
+    digitalWrite(PIN_VALVE, HIGH); // <-- INVERTIDO AQUI NO FAIL-SAFE (HIGH = OFF)
     g_valveState = false;
     g_valveOffTimeMs = 0;
     g_valveLastDebugMs = 0;
@@ -1225,7 +1348,8 @@ static void taskSensors(void *pvParameters) {
     LOGD("[SENSORS] ciclo leitura");
 
     DateTime nowUTC = getSystemTime();
-    data.timestamp = nowUTC.unixtime();
+    // ---> NOVO: Proteção Monotônica do Timestamp
+    data.timestamp = normalizeTelemetryTimestamp(nowUTC.unixtime());
 
     data.seq = ++g_telemetrySeq;
     g_seqDirty++;
@@ -1234,11 +1358,13 @@ static void taskSensors(void *pvParameters) {
     if (lockSem(i2cMutex, I2C_MUTEX_WAIT_MS)) {
       sensors_event_t h, t;
       if (aht.getEvent(&h, &t)) {
-        data.air_temp = t.temperature;
-        data.air_hum = h.relative_humidity;
+        // ---> NOVO: Arredondamento Matemático
+        data.air_temp = round(t.temperature * 100.0) / 100.0;
+        data.air_hum = round(h.relative_humidity * 100.0) / 100.0;
       } else {
         LOGW("[AHT] Falha leitura");
         data.air_temp = 0; data.air_hum = 0;
+        g_sensorErrAHT++; // ---> NOVO: Contador de falha
       }
       unlockSem(i2cMutex);
     }
@@ -1253,8 +1379,10 @@ static void taskSensors(void *pvParameters) {
 
     long somaUV = 0;
     for (int i = 0; i < 16; i++) { somaUV += analogRead(PIN_UV); vTaskDelay(1); }
-    data.uv_index = (((somaUV / 16) * 3.3) / 4095.0) / 0.1;
-    if (data.uv_index < 0.2) data.uv_index = 0.0;
+    float uv_raw = (((somaUV / 16) * 3.3) / 4095.0) / 0.1;
+    if (uv_raw < 0.2) uv_raw = 0.0;
+    // ---> NOVO: Arredondamento Matemático
+    data.uv_index = round(uv_raw * 100.0) / 100.0;
 
     DateTime nowBRT = DateTime(nowUTC.unixtime() + BRT_OFFSET_SEC);
     bool valveOn = false;
@@ -1352,7 +1480,10 @@ static void taskNetworkStorage(void *pvParameters) {
 
     // 2) Wi-Fi
     if (WiFi.status() != WL_CONNECTED) {
-      if (g_wifiConnected) LOGW("[NET] Wi-Fi caiu.");
+      if (g_wifiConnected) {
+        LOGW("[NET] Wi-Fi caiu.");
+        g_wifiDisconnects++; // ---> NOVO: Contador de queda do Wi-Fi
+      }
       g_wifiConnected = false;
       g_mqttConnected = false;
 
@@ -1386,6 +1517,8 @@ static void taskNetworkStorage(void *pvParameters) {
       if (!client.connected()) {
         g_mqttConnected = false;
         if (backoffCanTry(mqttB)) {
+          g_mqttReconnects++; // ---> NOVO: Contador de queda do MQTT
+
           uint32_t d = backoffDelay(1000, 20000, mqttB.attempt);
           LOGI("[AWS] Conectando MQTT (backoff=%lums)...", (unsigned long)d);
           // >>> PRESENCE (LWT + Birth)
@@ -1432,7 +1565,7 @@ static void taskNetworkStorage(void *pvParameters) {
     if (xQueueReceive(sensorQueue, &received, pdMS_TO_TICKS(50)) == pdPASS) {
       LOGD("[NET] Processando telemetria ts=%lu seq=%lu", (unsigned long)received.timestamp, (unsigned long)received.seq);
 
-      char payload[1400];
+      char payload[1536]; // ---> NOVO: Aumentado de 1400 para 1536
       uint32_t payloadLen = 0;
       bool jsonOk = buildTelemetryJson(received, payload, sizeof(payload), payloadLen);
 
@@ -1573,7 +1706,7 @@ void setup() {
   pinMode(PIN_UV, INPUT);
 
   pinMode(PIN_VALVE, OUTPUT);
-  digitalWrite(PIN_VALVE, LOW);
+  digitalWrite(PIN_VALVE, HIGH); // <-- INVERTIDO AQUI NO BOOT (HIGH = OFF)
 
   // Boot state válvula
   if (lockSem(valveMutex, 50)) {
@@ -1604,6 +1737,9 @@ void setup() {
 
   // NVS
   loadFromNVS();
+
+  // ---> NOVO: INICIALIZA DIAGNÓSTICOS DE BOOT E GERA BOOT_ID
+  initBootDiagnostics(); 
 
   // SD
   LOGI("[SD] Iniciando cartão...");
