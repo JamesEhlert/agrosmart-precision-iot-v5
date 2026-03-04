@@ -2,12 +2,13 @@
 
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; 
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
-import 'package:connectivity_plus/connectivity_plus.dart'; 
-import 'package:shimmer/shimmer.dart'; 
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:shimmer/shimmer.dart';
 
 import '../../../models/device_model.dart';
 import '../../../models/telemetry_model.dart';
@@ -35,11 +36,10 @@ class _MonitorTabState extends State<MonitorTab> {
   bool _isLoadingTelemetry = true;
   Timer? _telemetryTimer;
 
+  // NOVO: Timer apenas para “rebuild” do cronômetro (1s)
+  Timer? _uiTimer;
+
   bool _isSendingCommand = false;
-  static final Map<String, DateTime> _irrigationUntilMemory = <String, DateTime>{};
-  Timer? _irrigationTimer;
-  DateTime? _irrigationUntil;
-  int _remainingSeconds = 0;
 
   Map<String, dynamic>? _weatherSummary;
   bool _loadingWeather = false;
@@ -47,44 +47,59 @@ class _MonitorTabState extends State<MonitorTab> {
   bool _hasInternet = true;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
-  bool get _isIrrigating => _irrigationUntil != null && DateTime.now().isBefore(_irrigationUntil!);
+  // Lógica baseada na “Source of Truth” do Firestore:
+  bool get _isValveOpen => widget.device.state.valveOpen;
+
+  // Se estiver aberto e origin for schedule, consideramos travado por agendamento
+  bool get _isLockedBySchedule =>
+      _isValveOpen && widget.device.state.valveOrigin == 'schedule';
+
+  // Atalho: só vale iniciar timer visual se existe endsAt
+  bool get _hasValveEndsAt => widget.device.state.valveEndsAt != null;
 
   @override
   void initState() {
     super.initState();
-    _setupConnectivity(); 
-    _fetchWeatherSummary(); 
-    _fetchTelemetry();      
-    _startTelemetryPolling(); 
-    _restoreCountdownFromMemory();
+    _setupConnectivity();
+    _fetchWeatherSummary();
+    _fetchTelemetry();
+    _startTelemetryPolling();
+    _startUiTimer(); // NOVO
   }
 
   @override
   void didUpdateWidget(covariant MonitorTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
+
     if (oldWidget.device.id != widget.device.id) {
-      _fetchTelemetry(); 
+      _fetchTelemetry();
       _fetchWeatherSummary();
-      _clearIrrigationForCurrentDevice();
-      _restoreCountdownFromMemory();
+    } else if (oldWidget.device.settings.latitude !=
+        widget.device.settings.latitude) {
+      _fetchWeatherSummary();
     }
-    else if (oldWidget.device.settings.latitude != widget.device.settings.latitude) {
-      _fetchWeatherSummary();
+
+    // Se mudou valveEndsAt / valveOpen, força um rebuild
+    // (útil quando Firestore atualiza “state”)
+    if (mounted &&
+        (oldWidget.device.state.valveEndsAt != widget.device.state.valveEndsAt ||
+            oldWidget.device.state.valveOpen != widget.device.state.valveOpen)) {
+      setState(() {});
     }
   }
 
   @override
   void dispose() {
+    _uiTimer?.cancel();
     _telemetryTimer?.cancel();
-    _irrigationTimer?.cancel();
-    _connectivitySubscription?.cancel(); 
+    _connectivitySubscription?.cancel();
     super.dispose();
   }
 
   void _setupConnectivity() {
     Connectivity().checkConnectivity().then(_updateConnectionStatus);
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(_updateConnectionStatus);
+    _connectivitySubscription =
+        Connectivity().onConnectivityChanged.listen(_updateConnectionStatus);
   }
 
   void _updateConnectionStatus(List<ConnectivityResult> result) {
@@ -109,8 +124,38 @@ class _MonitorTabState extends State<MonitorTab> {
     );
   }
 
+  // NOVO: Timer visual do cronômetro (1 segundo)
+  void _startUiTimer() {
+    _uiTimer?.cancel();
+    _uiTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      // Atualiza a UI enquanto existir endsAt (manual ou schedule)
+      if (mounted && _hasValveEndsAt) {
+        setState(() {});
+      }
+    });
+  }
+
+  // NOVO: Calcula o tempo restante baseado no relógio global (endsAt) do Firestore
+  String _getRemainingTimeStr() {
+    final endsAt = widget.device.state.valveEndsAt;
+    if (endsAt == null) return "--:--";
+
+    // Normaliza para UTC para evitar diferença entre “local vs UTC”
+    final endsUtc = endsAt.toUtc();
+    final nowUtc = DateTime.now().toUtc();
+
+    final diffSeconds = endsUtc.difference(nowUtc).inSeconds;
+
+    if (diffSeconds <= 0) return "Finalizando...";
+
+    final minutes = diffSeconds ~/ 60;
+    final seconds = diffSeconds % 60;
+
+    return "${minutes}m ${seconds.toString().padLeft(2, '0')}s";
+  }
+
   Future<void> _fetchTelemetry() async {
-    if (!_hasInternet) return; 
+    if (!_hasInternet) return;
     try {
       final data = await _awsService.getLatestTelemetry(widget.device.id);
       if (mounted) {
@@ -141,7 +186,8 @@ class _MonitorTabState extends State<MonitorTab> {
 
     if (mounted) setState(() => _loadingWeather = true);
     try {
-      final url = Uri.parse("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto");
+      final url = Uri.parse(
+          "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto");
       final response = await http.get(url);
       if (response.statusCode == 200 && mounted) {
         setState(() => _weatherSummary = json.decode(response.body));
@@ -153,115 +199,133 @@ class _MonitorTabState extends State<MonitorTab> {
     }
   }
 
-  String _formatMmSs(int totalSeconds) => "${totalSeconds ~/ 60}m ${(totalSeconds % 60).toString().padLeft(2, '0')}s";
-
-  void _startCountdownTo(DateTime until) {
-    _irrigationUntil = until;
-    _remainingSeconds = until.difference(DateTime.now()).inSeconds;
-    if (_remainingSeconds < 0) _remainingSeconds = 0;
-
-    _irrigationTimer?.cancel();
-    _irrigationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || _irrigationUntil == null) return _irrigationTimer?.cancel();
-      final r = _irrigationUntil!.difference(DateTime.now()).inSeconds;
-      if (r <= 0) {
-        setState(() => _clearIrrigationForCurrentDevice());
-      } else {
-        setState(() => _remainingSeconds = r);
-      }
-    });
-  }
-
-  void _restoreCountdownFromMemory() {
-    final mem = _irrigationUntilMemory[widget.device.id];
-    if (mem != null && mem.difference(DateTime.now()).inSeconds > 0) {
-      setState(() => _irrigationUntil = mem);
-      _startCountdownTo(mem);
-    } else {
-      _clearIrrigationForCurrentDevice();
-    }
-  }
-
-  void _clearIrrigationForCurrentDevice() {
-    _irrigationTimer?.cancel();
-    _irrigationUntilMemory.remove(widget.device.id);
-    _irrigationUntil = null;
-    _remainingSeconds = 0;
-  }
-
   Future<void> _startManualIrrigation() async {
-    // Clamping defensivo no momento do envio
     final minutes = widget.device.settings.manualDuration.clamp(1, 15);
     if (minutes <= 0) return;
+
     final durationSeconds = minutes * 60;
 
-    final result = await _awsService.sendCommandWithAck(deviceId: widget.device.id, action: "on", duration: durationSeconds);
-    if (!mounted || !result.ok) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Falha ao enviar comando"), backgroundColor: AppColors.error));
-      return;
-    }
-
     try {
-      final ack = await _awsService.watchCommandStateForAck(
-        deviceId: widget.device.id, 
-        commandId: result.commandId,
-      ).firstWhere(
-        (e) => e != null && (e.status == 'started' || e.status == 'failed' || e.status == 'error')
-      ).timeout(const Duration(seconds: 15));
+      final result = await _awsService.sendCommandWithAck(
+        deviceId: widget.device.id,
+        action: "on",
+        duration: durationSeconds,
+      );
+
+      if (!mounted) return;
+
+      if (!result.ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Falha ao enviar comando"),
+            backgroundColor: AppColors.error,
+          ),
+        );
+        return;
+      }
+
+      final ack = await _awsService
+          .watchCommandStateForAck(
+            deviceId: widget.device.id,
+            commandId: result.commandId,
+          )
+          .firstWhere((e) =>
+              e != null &&
+              (e.status == 'started' ||
+                  e.status == 'failed' ||
+                  e.status == 'error'))
+          .timeout(const Duration(seconds: 15));
 
       if (!mounted) return;
 
       if (ack != null && ack.status == 'started') {
-        final until = DateTime.now().add(Duration(seconds: durationSeconds));
-        _irrigationUntilMemory[widget.device.id] = until;
-        setState(() => _irrigationUntil = until);
-        _startCountdownTo(until);
-        HapticFeedback.heavyImpact(); 
+        HapticFeedback.heavyImpact();
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("A placa recusou ou falhou ao ligar a válvula"), backgroundColor: AppColors.error));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("A placa recusou ou falhou ao ligar a válvula"),
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
+    } on ConflictException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.orange),
+      );
     } on TimeoutException {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("A placa não respondeu (Timeout)"), backgroundColor: AppColors.warning));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("A placa não respondeu (Timeout)"),
+          backgroundColor: AppColors.warning,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Erro: $e"), backgroundColor: AppColors.error),
+      );
     }
   }
 
-  Future<void> _stopManualIrrigation() async {
-    final result = await _awsService.sendCommandWithAck(deviceId: widget.device.id, action: "off", duration: 0);
-    if (!mounted || !result.ok) return;
-
+  // Renomeado (mais genérico): para manual e schedule, é o mesmo comando OFF
+  Future<void> _stopIrrigation() async {
     try {
-      final ack = await _awsService.watchCommandStateForAck(
-        deviceId: widget.device.id, 
-        commandId: result.commandId,
-      ).firstWhere(
-        (e) => e != null && (e.status == 'done' || e.status == 'failed' || e.status == 'error')
-      ).timeout(const Duration(seconds: 15));
+      final result = await _awsService.sendCommandWithAck(
+        deviceId: widget.device.id,
+        action: "off",
+        duration: 0,
+      );
+
+      if (!mounted) return;
+      if (!result.ok) return;
+
+      // CORREÇÃO DO TIMEOUT:
+      // Ao enviar OFF, esperamos RECEIVED (ou done/failed se vier),
+      // porque a ESP32 pode vincular o DONE ao command_id original do ON.
+      final ack = await _awsService
+          .watchCommandStateForAck(
+            deviceId: widget.device.id,
+            commandId: result.commandId,
+          )
+          .firstWhere((e) =>
+              e != null &&
+              (e.status == 'received' ||
+                  e.status == 'done' ||
+                  e.status == 'failed' ||
+                  e.status == 'error'))
+          .timeout(const Duration(seconds: 10));
 
       if (!mounted) return;
 
-      if (ack != null && ack.status == 'done') {
-        setState(() => _clearIrrigationForCurrentDevice());
+      if (ack != null) {
         HapticFeedback.heavyImpact();
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Falha na placa ao desligar"), backgroundColor: AppColors.error));
       }
     } on TimeoutException {
-      if (mounted) {
-        setState(() => _clearIrrigationForCurrentDevice());
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sem confirmação da placa ao desligar"), backgroundColor: AppColors.warning));
-      }
+      if (!mounted) return;
+
+      // Evita snackbar “barulhento”:
+      // o state global deve ser fechado pela Lambda de qualquer forma.
+      debugPrint("OFF timeout: sem ack rápido, aguardando atualização do state.");
+    } catch (e) {
+      if (!mounted) return;
+      debugPrint("Erro ao enviar OFF: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Erro ao desligar: $e"), backgroundColor: AppColors.error),
+      );
     }
   }
 
   Future<void> _onIrrigationButtonPressed() async {
     if (_isSendingCommand) return;
-    
-    HapticFeedback.mediumImpact(); 
+
+    HapticFeedback.mediumImpact();
     setState(() => _isSendingCommand = true);
-    
+
     try {
-      if (_isIrrigating) {
-        await _stopManualIrrigation();
+      if (_isValveOpen) {
+        await _stopIrrigation();
       } else {
         await _startManualIrrigation();
       }
@@ -273,7 +337,14 @@ class _MonitorTabState extends State<MonitorTab> {
   Widget _buildSectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.only(left: 8, bottom: 8),
-      child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black54)),
+      child: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+          color: Colors.black54,
+        ),
+      ),
     );
   }
 
@@ -281,6 +352,8 @@ class _MonitorTabState extends State<MonitorTab> {
   Widget build(BuildContext context) {
     final data = _telemetryData;
     final caps = widget.device.settings.capabilities;
+
+    final remainingStr = _getRemainingTimeStr();
 
     return Column(
       children: [
@@ -292,13 +365,20 @@ class _MonitorTabState extends State<MonitorTab> {
             child: const Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.wifi_off, color: AppColors.textLight, size: 16),
+                Icon(Icons.wifi_off,
+                    color: AppColors.textLight, size: 16),
                 SizedBox(width: 8),
-                Text("Sem conexão. Tentando reconectar...", style: TextStyle(color: AppColors.textLight, fontSize: 12, fontWeight: FontWeight.bold)),
+                Text(
+                  "Sem conexão. Tentando reconectar...",
+                  style: TextStyle(
+                    color: AppColors.textLight,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ],
             ),
           ),
-        
         Expanded(
           child: RefreshIndicator(
             onRefresh: _handleManualRefresh,
@@ -316,24 +396,21 @@ class _MonitorTabState extends State<MonitorTab> {
                       style: TextStyle(color: Colors.grey[600], fontSize: 12),
                     ),
                   const SizedBox(height: 10),
-
                   WeatherSummaryCard(
                     device: widget.device,
                     loadingWeather: _loadingWeather,
                     weatherSummary: _weatherSummary,
                     isLoadingTelemetry: _isLoadingTelemetry,
                   ),
-
-                  if (widget.device.settings.latitude != 0 && widget.device.settings.longitude != 0)
+                  if (widget.device.settings.latitude != 0 &&
+                      widget.device.settings.longitude != 0)
                     const SizedBox(height: 16),
-
                   SensorCards(
                     data: data,
                     isLoadingTelemetry: _isLoadingTelemetry,
                     capabilities: caps,
                   ),
 
-                  // Seção de Ações
                   if (_isLoadingTelemetry && data == null) ...[
                     _buildSectionTitle("Ações"),
                     Shimmer.fromColors(
@@ -341,35 +418,102 @@ class _MonitorTabState extends State<MonitorTab> {
                       highlightColor: Colors.grey[100]!,
                       child: Container(
                         height: 50,
-                        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10)),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                     ),
                   ] else if (data != null) ...[
                     _buildSectionTitle("Ações"),
-                    SizedBox(
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: (_isSendingCommand || !_hasInternet || !widget.device.isOnline) 
-                            ? null 
-                            : _onIrrigationButtonPressed,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _isIrrigating ? AppColors.error : AppColors.info,
+
+                    // Se está rodando por agendamento, mostramos botão de “cancelar”
+                    if (_isLockedBySchedule)
+                      SizedBox(
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: (_isSendingCommand ||
+                                  !_hasInternet ||
+                                  !widget.device.isOnline)
+                              ? null
+                              : _onIrrigationButtonPressed,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange,
+                          ),
+                          child: _isSendingCommand
+                              ? const SizedBox(
+                                  height: 24,
+                                  width: 24,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 3,
+                                  ),
+                                )
+                              : Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.stop_circle,
+                                        color: Colors.white),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      "CANCELAR AGENDAMENTO ($remainingStr)",
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                         ),
-                        child: _isSendingCommand
-                            ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3))
-                            : Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(_isIrrigating ? Icons.stop_circle : Icons.water),
-                                  const SizedBox(width: 8),
-                                  // Assegura que o limite defensivo visual tb está em 15
-                                  Text(_isIrrigating ? "PARAR (${_formatMmSs(_remainingSeconds)})" : "IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration.clamp(1, 15)} min)"),
-                                ],
-                              ),
+                      )
+                    else
+                      SizedBox(
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: (_isSendingCommand ||
+                                  !_hasInternet ||
+                                  !widget.device.isOnline)
+                              ? null
+                              : _onIrrigationButtonPressed,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor:
+                                _isValveOpen ? AppColors.error : AppColors.info,
+                          ),
+                          child: _isSendingCommand
+                              ? const SizedBox(
+                                  height: 24,
+                                  width: 24,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 3,
+                                  ),
+                                )
+                              : Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(_isValveOpen
+                                        ? Icons.stop_circle
+                                        : Icons.water),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      _isValveOpen
+                                          ? "PARAR ($remainingStr)"
+                                          : "IRRIGAÇÃO MANUAL (${widget.device.settings.manualDuration.clamp(1, 15)} min)",
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                  ] else
+                    const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Text(
+                          "Nenhum dado recebido do dispositivo.",
+                          style: TextStyle(color: Colors.grey),
+                        ),
                       ),
                     ),
-                  ] else
-                    const Center(child: Padding(padding: EdgeInsets.all(20), child: Text("Nenhum dado recebido do dispositivo.", style: TextStyle(color: Colors.grey)))),
                 ],
               ),
             ),

@@ -79,7 +79,6 @@ class _DashboardPageState extends State<DashboardPage> {
                   setState(() => _selectedDeviceId = idController.text.trim());
                 }
               } catch (e) {
-                // SUBSTITUÍDO: Colors.red -> AppColors.error
                 if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Erro: $e"), backgroundColor: AppColors.error));
               }
             },
@@ -117,7 +116,13 @@ class _DashboardPageState extends State<DashboardPage> {
         return StreamBuilder<DeviceModel>(
           stream: _deviceService.getDeviceStream(_selectedDeviceId!),
           builder: (context, snapshotDevice) {
-            final device = snapshotDevice.data ?? DeviceModel(id: _selectedDeviceId!, isOnline: false, settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: "Carregando...", timezoneOffset: -3, capabilities: []));
+            // CORREÇÃO AQUI: Adicionado state: DeviceState()
+            final device = snapshotDevice.data ?? DeviceModel(
+              id: _selectedDeviceId!, 
+              isOnline: false, 
+              settings: DeviceSettings(targetMoisture: 0, manualDuration: 0, deviceName: "Carregando...", timezoneOffset: -3, capabilities: []),
+              state: DeviceState()
+            );
             
             final List<Widget> pages = [
               MonitorTab(device: device), 
@@ -136,7 +141,6 @@ class _DashboardPageState extends State<DashboardPage> {
                     children: [
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        // SUBSTITUÍDO: Colors.green[700] -> AppColors.primary
                         decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(20)),
                         child: Row(
                           children: [
@@ -146,7 +150,6 @@ class _DashboardPageState extends State<DashboardPage> {
                                 Text(device.settings.deviceName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.textLight)),
                                 Row(
                                   children: [
-                                    // SUBSTITUÍDO: Cores de status de conexão usando AppColors
                                     Container(
                                       width: 8, height: 8, 
                                       decoration: BoxDecoration(
