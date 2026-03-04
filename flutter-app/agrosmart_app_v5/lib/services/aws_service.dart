@@ -1,9 +1,4 @@
 // ARQUIVO: lib/services/aws_service.dart
-//
-// Responsável por chamar a API Gateway (telemetry + command) adicionando:
-// - Authorization: Bearer <Firebase ID Token>
-// - retry automático em 401 (força refresh do token e tenta 1x de novo)
-// - Exceptions tipadas (401/403/erros gerais) para a UI tratar
 
 import 'dart:async';
 import 'dart:convert';
@@ -14,7 +9,6 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 
-// Importa a configuração de ambiente que criamos
 import '../core/config/app_config.dart'; 
 import '../models/telemetry_model.dart';
 
@@ -83,8 +77,13 @@ class ForbiddenException extends ApiException {
       : super(403, message, body: body);
 }
 
+// ---> NOVO: EXCEÇÃO PARA ERRO 409
+class ConflictException extends ApiException {
+  ConflictException(String message, {String? body})
+      : super(409, message, body: body);
+}
+
 class AwsService {
-  // Agora as URLs vêm dinamicamente do AppConfig
   final String _telemetryUrl = AppConfig.telemetryEndpoint;
   final String _commandUrl = AppConfig.commandEndpoint;
 
@@ -107,10 +106,6 @@ class AwsService {
 
   Future<Map<String, String>> _buildHeaders({bool forceRefresh = false}) async {
     final token = await _getFirebaseIdToken(forceRefresh: forceRefresh);
-
-    final suffix = token.length > 6 ? token.substring(token.length - 6) : token;
-    debugPrint("[AUTH] Authorization header set (Bearer ****$suffix)");
-
     return <String, String>{
       "Content-Type": "application/json",
       "Authorization": "Bearer $token",
@@ -124,7 +119,6 @@ class AwsService {
     http.Response res = await send(headers);
 
     if (res.statusCode == 401) {
-      debugPrint("[AWS] 401 recebido. Forçando refresh do token e tentando novamente...");
       headers = await _buildHeaders(forceRefresh: true);
       res = await send(headers);
     }
@@ -146,13 +140,13 @@ class AwsService {
 
     if (code == 401) throw UnauthorizedException(msg, body: body);
     if (code == 403) throw ForbiddenException(msg, body: body);
+    if (code == 409) throw ConflictException(msg, body: body); // ---> Lança a nova Exceção
     throw ApiException(code, msg, body: body);
   }
 
   Future<TelemetryModel?> getLatestTelemetry(String deviceId) async {
-    // Validação de segurança para garantir que a URL base foi injetada corretamente
     if (_telemetryUrl.isEmpty || _telemetryUrl == '/telemetry') {
-      throw Exception("URL da API não configurada. Verifique o --dart-define.");
+      throw Exception("URL da API não configurada.");
     }
 
     final uri = Uri.parse("$_telemetryUrl?device_id=$deviceId&limit=1");
@@ -173,7 +167,6 @@ class AwsService {
       }
       return null;
     } catch (e) {
-      debugPrint("Erro GET Latest: $e");
       rethrow;
     }
   }
@@ -199,7 +192,6 @@ class AwsService {
       }
 
       final uri = Uri.parse(url);
-      debugPrint("Buscando histórico: $uri");
 
       final res = await _sendWithAuthRetry((headers) => http.get(uri, headers: headers));
 
@@ -224,7 +216,6 @@ class AwsService {
 
       return HistoryResponse(items: items, nextToken: newNextToken);
     } catch (e) {
-      debugPrint("Erro History: $e");
       rethrow;
     }
   }
@@ -251,13 +242,11 @@ class AwsService {
     required int duration,
     String? commandId,
   }) async {
-    // Validação de segurança
     if (_commandUrl.isEmpty || _commandUrl == '/command') {
-      throw Exception("URL da API não configurada. Verifique o --dart-define.");
+      throw Exception("URL da API não configurada.");
     }
 
     final uri = Uri.parse(_commandUrl);
-
     final generated = commandId == null || commandId.isEmpty;
     final cmdId = generated ? _generateCommandId() : commandId;
 
@@ -269,8 +258,6 @@ class AwsService {
     };
 
     final body = json.encode(bodyMap);
-
-    debugPrint("Enviando comando para $deviceId: $body");
 
     try {
       final res = await _sendWithAuthRetry(
@@ -294,14 +281,11 @@ class AwsService {
             }
           }
         } catch (_) {}
-
-        debugPrint("Comando enviado OK. command_id=$finalCmdId (generated=$generated)");
         return SendCommandResult(ok: true, commandId: finalCmdId, message: message);
       }
 
       _throwForStatus(res, defaultMessage: "Falha ao enviar comando.");
     } catch (e) {
-      debugPrint("Exceção no envio de comando: $e");
       rethrow;
     }
   }
@@ -309,7 +293,6 @@ class AwsService {
   String _normalizeStatus(dynamic raw) {
     if (raw == null) return "unknown";
     final s = raw.toString().trim().toLowerCase();
-    // AJUSTE: Adicionado o "failed" na lista de permitidos
     if (s == "received" || s == "started" || s == "done" || s == "failed" || s == "error") {
       return s;
     }
@@ -376,7 +359,6 @@ class AwsService {
       (event) {
         if (event == null) return;
         final st = event.status.toLowerCase();
-        // AJUSTE: Parar de escutar se o status for failed, error ou done
         if (st == 'done' || st == 'failed' || st == 'error') {
           if (!completer.isCompleted) completer.complete(event);
           timer?.cancel();
@@ -463,7 +445,6 @@ class AwsService {
     sub = watchAckHistoryForCommand(deviceId: deviceId, commandId: commandId).listen((events) {
       for (final e in events) {
         final st = e.status.toLowerCase();
-        // AJUSTE: Parar de escutar se o status for failed, error ou done
         if (st == 'done' || st == 'failed' || st == 'error') {
           if (!completer.isCompleted) {
             completer.complete(e);

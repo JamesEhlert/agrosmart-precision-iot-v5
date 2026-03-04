@@ -1,4 +1,5 @@
 // ARQUIVO: lib/models/device_model.dart
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class DeviceSettings {
   double targetMoisture;
@@ -8,8 +9,6 @@ class DeviceSettings {
   double latitude;
   double longitude;
   bool enableWeatherControl;
-  
-  // Lista de capacidades (quais sensores esse dispositivo tem)
   List<String> capabilities;
 
   DeviceSettings({
@@ -24,13 +23,9 @@ class DeviceSettings {
   });
 
   factory DeviceSettings.fromMap(Map<String, dynamic> map) {
-    // --- LÓGICA DE COMPATIBILIDADE ---
-    // Se o campo 'capabilities' não existir (dispositivos antigos),
-    // assumimos que ele é um dispositivo completo (V5) para não sumir os sensores.
-    var caps = <String>['air', 'soil', 'light', 'rain', 'uv']; 
-    
+    // Capabilities padrão (fallback)
+    var caps = <String>['air', 'soil', 'light', 'rain', 'uv'];
     if (map['capabilities'] != null) {
-      // Converte a lista dinâmica do Firebase para List<String>
       caps = List<String>.from(map['capabilities']);
     }
 
@@ -39,7 +34,6 @@ class DeviceSettings {
       manualDuration: map['manual_valve_duration'] ?? 5,
       deviceName: map['device_name'] ?? 'Dispositivo Sem Nome',
       timezoneOffset: map['timezone_offset'] ?? -3,
-      // Garante que lat/lon sejam double mesmo que venham como int do banco
       latitude: (map['latitude'] ?? 0.0).toDouble(),
       longitude: (map['longitude'] ?? 0.0).toDouble(),
       enableWeatherControl: map['enable_weather_control'] ?? false,
@@ -61,15 +55,82 @@ class DeviceSettings {
   }
 }
 
+// =====================================================================================
+// STATE (Source of truth do device, vindo do Firestore)
+// =====================================================================================
+class DeviceState {
+  final bool valveOpen;
+  final String? valveOrigin;
+
+  /// Timestamp vindo da nuvem:
+  /// - quando abre: pode ser um horário "previsto" (agora + duração)
+  /// - quando fecha: pode virar o horário real de término
+  final DateTime? valveEndsAt;
+
+  DeviceState({
+    this.valveOpen = false,
+    this.valveOrigin,
+    this.valveEndsAt,
+  });
+
+  factory DeviceState.fromMap(Map<String, dynamic>? map) {
+    if (map == null) return DeviceState();
+
+    return DeviceState(
+      valveOpen: map['valve_open'] ?? false,
+      valveOrigin: map['valve_origin'],
+      valveEndsAt: _parseFirestoreDate(map['valve_ends_at']),
+    );
+  }
+
+  /// Parser robusto para data vinda do Firestore / mocks / integrações.
+  /// Aceita:
+  /// - Timestamp (Firestore)
+  /// - DateTime (mocks/testes)
+  /// - String ISO-8601
+  /// - int epoch (ms ou s)
+  static DateTime? _parseFirestoreDate(dynamic value) {
+    if (value == null) return null;
+
+    // Firestore Timestamp
+    if (value is Timestamp) {
+      return value.toDate();
+    }
+
+    // Test/mocks
+    if (value is DateTime) {
+      return value;
+    }
+
+    // ISO string
+    if (value is String) {
+      return DateTime.tryParse(value);
+    }
+
+    // Epoch (segundos ou milissegundos)
+    if (value is int) {
+      // Heurística: se for muito grande, assume ms
+      final isMilliseconds = value > 100000000000; // ~ ano 5138 em segundos, então aqui é ms com folga
+      final ms = isMilliseconds ? value : value * 1000;
+      return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true).toLocal();
+    }
+
+    // Qualquer outro tipo não suportado
+    return null;
+  }
+}
+
 class DeviceModel {
   final String id;
   final bool isOnline;
   final DeviceSettings settings;
+  final DeviceState state;
 
   DeviceModel({
     required this.id,
     required this.isOnline,
     required this.settings,
+    required this.state,
   });
 
   factory DeviceModel.fromFirestore(Map<String, dynamic> data, String docId) {
@@ -77,6 +138,7 @@ class DeviceModel {
       id: docId,
       isOnline: data['online'] ?? false,
       settings: DeviceSettings.fromMap(data['settings'] ?? {}),
+      state: DeviceState.fromMap(data['state']),
     );
   }
 }

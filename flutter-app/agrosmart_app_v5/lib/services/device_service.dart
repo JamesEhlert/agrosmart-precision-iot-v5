@@ -41,7 +41,8 @@ class DeviceService {
               deviceName: 'Desconhecido',
               timezoneOffset: -3,
               capabilities: [] 
-            )
+            ),
+            state: DeviceState() // CORREÇÃO AQUI
         );
       }
       return DeviceModel.fromFirestore(doc.data()!, doc.id);
@@ -56,17 +57,12 @@ class DeviceService {
     final deviceRef = _firestore.collection('devices').doc(deviceId);
 
     try {
-      // 1. TENTA LER O DISPOSITIVO
-      // Se não existir ou o usuário não for o dono (segundo as regras), o Firebase vai lançar 'permission-denied'
       final docSnap = await deviceRef.get();
       
       if (!docSnap.exists) {
-         // Na teoria, com a regra atual, nunca vai cair aqui, pois o Firebase bloqueia a leitura de docs inexistentes se o owner não bater.
-         // Mas deixamos por precaução caso as regras do Firestore mudem no futuro.
         throw Exception("Dispositivo não encontrado no sistema. Verifique se o ID está correto ou se a placa já foi provisionada.");
       }
 
-      // 2. Dispositivo existe e o usuário tem permissão de leitura. Aplicamos as configurações básicas.
       final defaultSettings = {
         'device_name': initialName,
         'target_soil_moisture': 60,
@@ -84,13 +80,11 @@ class DeviceService {
 
     } on FirebaseException catch (e) {
       if (e.code == 'permission-denied') {
-        // MENSAGEM AJUSTADA: Agora cobre tanto a inexistência quanto a apropriação por terceiros.
         throw Exception("Não foi possível vincular. Verifique se o ID está correto ou se o dispositivo já foi registrado em outra conta.");
       }
       rethrow;
     }
 
-    // 3. Adiciona o ID no array 'my_devices' do perfil do usuário
     await _firestore.collection('users').doc(user.uid).update({
       'my_devices': FieldValue.arrayUnion([deviceId])
     });
